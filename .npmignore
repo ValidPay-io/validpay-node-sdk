@@ -1,0 +1,14 @@
+src/
+tests/
+node_modules/
+coverage/
+.github/
+.vscode/
+.idea/
+tsconfig.json
+tsconfig.build.json
+*.tsbuildinfo
+*.log
+.env
+.env.local
+.gitignore

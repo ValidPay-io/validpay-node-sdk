@@ -1,0 +1,51 @@
+{
+  "name": "@validpay/node-sdk",
+  "version": "0.1.0",
+  "description": "Official ValidPay Node.js SDK — client-side AES-256-GCM encryption + ValidPay API client. Zero production dependencies.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "validpay",
+    "encryption",
+    "aes-256-gcm",
+    "document-verification",
+    "blind-escrow"
+  ],
+  "homepage": "https://github.com/ValidPay-io/validpay-node-sdk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ValidPay-io/validpay-node-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ValidPay-io/validpay-node-sdk/issues"
+  },
+  "license": "MIT",
+  "author": "ValidPay",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
