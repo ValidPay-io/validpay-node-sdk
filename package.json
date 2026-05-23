@@ -1,7 +1,7 @@
 {
   "name": "@validpay/node-sdk",
-  "version": "0.1.0",
-  "description": "Official ValidPay Node.js SDK — client-side AES-256-GCM encryption + ValidPay API client. Zero production dependencies.",
+  "version": "0.2.0",
+  "description": "Official ValidPay Node.js SDK — client-side AES-256-GCM encryption + commitment hashing + split-key + selective disclosure + revocation. Zero production dependencies.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,6 +31,10 @@
     "encryption",
     "aes-256-gcm",
     "document-verification",
+    "check-fraud",
+    "authentication",
+    "selective-disclosure",
+    "split-key",
     "blind-escrow"
   ],
   "homepage": "https://github.com/ValidPay-io/validpay-node-sdk",

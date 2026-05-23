@@ -1,10 +1,15 @@
-import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+import { randomBytes, createCipheriv, createDecipheriv, createHash } from "node:crypto";
 import { ValidPayError } from "./types.js";
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
+
+/**
+ * Wire format (matches the Python SDK so blobs are interoperable):
+ *   base64(iv[12] || authTag[16] || ciphertext)
+ */
 
 export function generateKey(): string {
   return randomBytes(KEY_BYTES).toString("base64");
@@ -69,4 +74,81 @@ export function decrypt(blob: string, key: string): string {
       { cause },
     );
   }
+}
+
+export function commitmentHash(plaintext: string): string {
+  return createHash("sha256").update(plaintext, "utf8").digest("hex");
+}
+
+export function splitKey(key: string): [string, string] {
+  const keyBuf = decodeKey(key);
+  const shareA = randomBytes(KEY_BYTES);
+  const shareB = Buffer.alloc(KEY_BYTES);
+  for (let i = 0; i < KEY_BYTES; i++) {
+    shareB[i] = keyBuf[i]! ^ shareA[i]!;
+  }
+  return [shareA.toString("base64"), shareB.toString("base64")];
+}
+
+export function combineKeyShares(shareA: string, shareB: string): string {
+  const a = decodeKey(shareA);
+  const b = decodeKey(shareB);
+  const combined = Buffer.alloc(KEY_BYTES);
+  for (let i = 0; i < KEY_BYTES; i++) {
+    combined[i] = a[i]! ^ b[i]!;
+  }
+  return combined.toString("base64");
+}
+
+/** Encrypt each field of payload with its own AES key (Selective Disclosure). */
+export function encryptFields(
+  payload: Record<string, unknown>,
+): { encryptedFields: Record<string, string>; fieldKeys: Record<string, string> } {
+  const encryptedFields: Record<string, string> = {};
+  const fieldKeys: Record<string, string> = {};
+  for (const [name, value] of Object.entries(payload)) {
+    const k = generateKey();
+    const plaintext = typeof value === "string" ? value : JSON.stringify(value);
+    encryptedFields[name] = encrypt(plaintext, k);
+    fieldKeys[name] = k;
+  }
+  return { encryptedFields, fieldKeys };
+}
+
+/** Build per-role key map; "full" role always added with all keys. */
+export function buildKeyMap(
+  fieldKeys: Record<string, string>,
+  disclosurePolicy: Record<string, string[]>,
+): Record<string, Record<string, string>> {
+  const map: Record<string, Record<string, string>> = {};
+  for (const [role, fields] of Object.entries(disclosurePolicy)) {
+    const roleKeys: Record<string, string> = {};
+    for (const f of fields) {
+      if (fieldKeys[f] !== undefined) roleKeys[f] = fieldKeys[f];
+    }
+    map[role] = roleKeys;
+  }
+  map["full"] = { ...fieldKeys };
+  return map;
+}
+
+/** Decrypt only fields with keys; others become "[REDACTED]". */
+export function decryptFields(
+  encryptedFields: Record<string, string>,
+  fieldKeys: Record<string, string>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, blob] of Object.entries(encryptedFields)) {
+    if (fieldKeys[name] !== undefined) {
+      const plaintext = decrypt(blob, fieldKeys[name]);
+      try {
+        out[name] = JSON.parse(plaintext);
+      } catch {
+        out[name] = plaintext;
+      }
+    } else {
+      out[name] = "[REDACTED]";
+    }
+  }
+  return out;
 }
