@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { generateKey, encrypt, decrypt } from "../src/crypto.js";
+import {
+  generateKey,
+  encrypt,
+  decrypt,
+  commitmentHash,
+  splitKey,
+  combineKeyShares,
+  encryptFields,
+  buildKeyMap,
+  decryptFields,
+} from "../src/crypto.js";
 import { ValidPayError } from "../src/types.js";
 
 describe("crypto", () => {
@@ -93,5 +103,86 @@ describe("crypto", () => {
   it("throws on an invalid key length", () => {
     const shortKey = Buffer.from("short").toString("base64");
     expect(() => encrypt("hello", shortKey)).toThrow(ValidPayError);
+  });
+});
+
+describe("commitmentHash", () => {
+  it("returns SHA-256 hex of plaintext (64 chars)", () => {
+    const h = commitmentHash("hello");
+    expect(h).toBe("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    expect(h).toHaveLength(64);
+  });
+
+  it("is deterministic", () => {
+    expect(commitmentHash("abc")).toBe(commitmentHash("abc"));
+  });
+
+  it("differs for different inputs", () => {
+    expect(commitmentHash("a")).not.toBe(commitmentHash("b"));
+  });
+});
+
+describe("splitKey / combineKeyShares", () => {
+  it("round-trips a key through XOR shares", () => {
+    const key = generateKey();
+    const [a, b] = splitKey(key);
+    expect(Buffer.from(a, "base64").length).toBe(32);
+    expect(Buffer.from(b, "base64").length).toBe(32);
+    expect(a).not.toBe(key);
+    expect(b).not.toBe(key);
+    expect(combineKeyShares(a, b)).toBe(key);
+  });
+
+  it("each share alone reveals no key bits (different from original)", () => {
+    const key = generateKey();
+    const [a, b] = splitKey(key);
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(key);
+  });
+
+  it("shares decrypt only when combined", () => {
+    const key = generateKey();
+    const blob = encrypt("secret payload", key);
+    const [a, b] = splitKey(key);
+    expect(() => decrypt(blob, a)).toThrow(ValidPayError);
+    expect(() => decrypt(blob, b)).toThrow(ValidPayError);
+    const reconstructed = combineKeyShares(a, b);
+    expect(decrypt(blob, reconstructed)).toBe("secret payload");
+  });
+});
+
+describe("selective disclosure helpers", () => {
+  it("encryptFields produces per-field independent ciphertexts", () => {
+    const payload = { amount: 1500, payee: "Alice", memo: "rent" };
+    const { encryptedFields, fieldKeys } = encryptFields(payload);
+    expect(Object.keys(encryptedFields).sort()).toEqual(["amount", "memo", "payee"]);
+    expect(Object.keys(fieldKeys).sort()).toEqual(["amount", "memo", "payee"]);
+    expect(fieldKeys.amount).not.toBe(fieldKeys.payee);
+  });
+
+  it("buildKeyMap adds a 'full' role with all keys", () => {
+    const fieldKeys = { a: generateKey(), b: generateKey(), c: generateKey() };
+    const map = buildKeyMap(fieldKeys, { bank: ["a"], auditor: ["a", "b"] });
+    expect(Object.keys(map.bank!).sort()).toEqual(["a"]);
+    expect(Object.keys(map.auditor!).sort()).toEqual(["a", "b"]);
+    expect(Object.keys(map.full!).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("decryptFields redacts fields without keys", () => {
+    const payload = { amount: 1500, payee: "Alice", memo: "rent" };
+    const { encryptedFields, fieldKeys } = encryptFields(payload);
+    const partial = { amount: fieldKeys.amount! };
+    const result = decryptFields(encryptedFields, partial);
+    expect(result).toEqual({
+      amount: 1500,
+      payee: "[REDACTED]",
+      memo: "[REDACTED]",
+    });
+  });
+
+  it("decryptFields fully decrypts with all keys", () => {
+    const payload = { amount: 1500, payee: "Alice" };
+    const { encryptedFields, fieldKeys } = encryptFields(payload);
+    expect(decryptFields(encryptedFields, fieldKeys)).toEqual(payload);
   });
 });
