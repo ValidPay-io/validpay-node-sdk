@@ -13,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required for npm provenance attestations.
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,6 +33,11 @@ jobs:
             echo "::error::package.json version ($PKG_VERSION) does not match release tag ($TAG_STRIPPED)"
             exit 1
           fi
-      - run: npm publish --provenance --access public
+      # NOTE: --provenance requires the source repo to be PUBLIC (npm's
+      # transparency log can't reference private commits). validpay-node-sdk
+      # is currently private — drop the flag. If we later open-source the
+      # SDK, re-add `--provenance` and the `id-token: write` permission
+      # above.
+      - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
