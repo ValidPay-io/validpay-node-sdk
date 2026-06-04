@@ -231,6 +231,52 @@ When the API itself rejects a request, the response body carries a canonical `co
 
 The full list lives in [`ValidPay-API/src/errorCodes.ts`](https://github.com/ValidPay-io/ValidPay-API/blob/main/src/errorCodes.ts).
 
+### Webhook verification (Prompt 079)
+
+ValidPay POSTs intent events (`intent.created`, `intent.verified`, `intent.revoked`, `intent.reinstated`) to URLs you register via `POST /v1/webhooks`. Every delivery carries an HMAC signature in the `X-ValidPay-Signature` header — verify it before trusting the body:
+
+```ts
+import express from "express";
+import { verifyWebhookSignature } from "@validpay/node-sdk";
+
+const app = express();
+
+app.post(
+  "/webhooks/validpay",
+  // CRITICAL: read the body as raw bytes, not parsed JSON. The HMAC is
+  // computed over the EXACT bytes ValidPay sent; JSON.parse loses the
+  // key order and whitespace and the signature won't match.
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const rawBody = (req.body as Buffer).toString("utf8");
+    const result = verifyWebhookSignature(
+      req.headers["x-validpay-signature"] as string | undefined,
+      rawBody,
+      process.env.VALIDPAY_WEBHOOK_SECRET!,
+    );
+    if (!result.valid) return res.status(401).send(result.reason);
+
+    const event = JSON.parse(rawBody);
+    switch (event.event) {
+      case "intent.revoked":
+        // update your local record, remove "Verified" badge, etc.
+        break;
+      case "intent.verified":
+        // someone scanned the QR
+        break;
+    }
+    res.status(200).send("OK");
+  },
+);
+```
+
+`verifyWebhookSignature` enforces a 5-minute replay window by default. Configure via the `toleranceSeconds` option if you need more.
+
+Also worth knowing:
+- `X-ValidPay-Delivery-Id` carries a per-delivery UUID — deduplicate on this to handle at-least-once retries.
+- Failed deliveries retry on exponential backoff (5s → 30s → 5min). Non-retryable 4xx responses are not re-attempted.
+- The dashboard endpoint `GET /v1/webhooks/:id/deliveries` returns the last 50 attempts so you can see what landed and what didn't.
+
 ### Rate limits
 
 All authenticated responses carry three standard headers — read them to pace yourself before you hit a 429:
