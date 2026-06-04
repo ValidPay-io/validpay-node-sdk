@@ -43,6 +43,22 @@ console.log(result.issuer);              // "Acme Bank"
 console.log(result.issuerVerified);      // true
 ```
 
+### Building a verification URL
+
+The `retrievalId` is public; the `key` is secret. Stamp them into a URL fragment (the `#` part — fragments are never sent to the server, even by curl) so a single link both identifies the intent and decrypts it:
+
+```ts
+function toBase64Url(b64: string): string {
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+const verifyUrl = `https://validpay.io/verify/${retrievalId}#key=${toBase64Url(key)}`;
+// → encode in a QR, paste in an email, scan with a phone camera.
+// The /verify page reads the fragment client-side and decrypts locally.
+```
+
+`toBase64Url` matters because phone QR scanners + browser share-sheets mangle `+`, `/`, and `=` in URL fragments. The `/verify` page accepts both standard base64 and base64url for backward compatibility, but new links should always emit base64url.
+
 ## How it works
 
 1. `createIntent` generates a fresh 256-bit key, encrypts your payload locally with AES-256-GCM, computes a SHA-256 commitment hash of the plaintext, and POSTs only the ciphertext + hash to `POST /v1/intent`.
@@ -190,6 +206,42 @@ All SDK errors throw `ValidPayError` with a stable `code`:
 | `unauthorized`                  | API returned 401 (invalid or missing API key).                |
 | `invalid_response`              | API returned 2xx but response shape was unexpected.           |
 | `invalid_payload`               | Decrypted bytes were not valid JSON.                          |
+
+### API error codes (wire format)
+
+When the API itself rejects a request, the response body carries a canonical `code` field alongside the legacy `error` string. SDKs (this one included) surface both — use `code` for exhaustive `switch` checks because the values are stable across versions.
+
+| `code`                   | HTTP | Meaning                                                                   |
+| ------------------------ | ---- | ------------------------------------------------------------------------- |
+| `INVALID_BODY`           | 400  | Request body failed schema validation. `details` carries the field-level errors. |
+| `INVALID_CREDENTIALS`    | 401  | Wrong email or password on /v1/auth/login.                                |
+| `INVALID_API_KEY`        | 401  | API key is missing, malformed, or revoked.                                |
+| `MISSING_TOKEN`          | 401  | Endpoint requires a bearer token and didn't get one.                       |
+| `INVALID_TOKEN`          | 401  | Bearer token is expired or doesn't decode.                                |
+| `ACCOUNT_LOCKED`         | 423  | Too many failed sign-ins. `message` carries the retry window.             |
+| `INSUFFICIENT_SCOPE`     | 403  | API key doesn't have the scope this endpoint requires.                    |
+| `INTENT_NOT_FOUND`       | 404  | No intent matches this retrieval ID.                                      |
+| `INTENT_REVOKED`         | 200  | Body is intentionally empty — issuer revoked the intent.                  |
+| `DOCUMENT_LIMIT_REACHED` | 402  | Free or sandbox quota exhausted. `message` describes the upgrade path.    |
+| `PAYLOAD_TOO_LARGE`      | 413  | Encrypted payload exceeds the per-route limit (25 MB for uploads).        |
+| `RATE_LIMIT_EXCEEDED`    | 429  | Per-API-key bucket exhausted. Honour the `Retry-After` header.            |
+| `VALIDATION_ERROR`       | 422  | Domain-level rule rejected the request (e.g. `valid_from > valid_until`). |
+| `NOT_FOUND`              | 404  | Generic — the route exists but the resource doesn't.                      |
+| `INTERNAL_ERROR`         | 500  | Unhandled server error. Retry with backoff; report if it persists.        |
+
+The full list lives in [`ValidPay-API/src/errorCodes.ts`](https://github.com/ValidPay-io/ValidPay-API/blob/main/src/errorCodes.ts).
+
+### Rate limits
+
+All authenticated responses carry three standard headers — read them to pace yourself before you hit a 429:
+
+| Header                  | Meaning                                                                |
+| ----------------------- | ---------------------------------------------------------------------- |
+| `X-RateLimit-Limit`     | Cap per API key per minute. Currently 600.                             |
+| `X-RateLimit-Remaining` | Requests left in the current window.                                   |
+| `X-RateLimit-Reset`     | UNIX timestamp (seconds) when the window resets.                       |
+
+On 429 you'll also see `Retry-After` (seconds) — the SDK doesn't auto-retry; honour it from your caller.
 
 ## Blob format
 
