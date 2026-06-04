@@ -24,3 +24,10 @@ export {
   type RawIntentResponse,
   type RawCreateIntentResponse,
 } from "./types.js";
+export {
+  verifyWebhookSignature,
+  DEFAULT_WEBHOOK_TOLERANCE_SECONDS,
+  type VerifyWebhookOptions,
+  type WebhookVerifyResult,
+  type WebhookVerifyFailureReason,
+} from "./webhookSignature.js";
