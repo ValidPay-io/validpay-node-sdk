@@ -1,6 +1,6 @@
 {
   "name": "@validpay/node-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Official ValidPay Node.js SDK — client-side AES-256-GCM encryption + commitment hashing + split-key + selective disclosure + revocation. Zero production dependencies.",
   "type": "module",
   "main": "./dist/index.js",
