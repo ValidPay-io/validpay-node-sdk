@@ -25,6 +25,11 @@ import {
   type RawBatchCreateResponse,
   type RawFragmentResponse,
   type RawRevocationHistoryResponse,
+  type ListIntentsParams,
+  type ListIntentsResult,
+  type IntentMetadata,
+  type RawIntentMetadata,
+  type RawListIntentsResponse,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.validpay.io";
@@ -572,6 +577,53 @@ export class ValidPayClient {
     }));
   }
 
+  // === Audit / list (Prompt 080) ===
+
+  /**
+   * List the intents this API key has created. Returns metadata only —
+   * the AES payload + key are NEVER part of the response, by design.
+   * Use this for audit, reconciliation, and "did this intent get
+   * scanned?" dashboards.
+   */
+  async listIntents(params: ListIntentsParams = {}): Promise<ListIntentsResult> {
+    const qs = new URLSearchParams();
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params.since !== undefined) qs.set("since", params.since);
+    if (params.until !== undefined) qs.set("until", params.until);
+    if (params.status !== undefined) qs.set("status", params.status);
+    if (params.documentType !== undefined) qs.set("document_type", params.documentType);
+    if (params.order !== undefined) qs.set("order", params.order);
+
+    const path = qs.size > 0 ? `/v1/intents?${qs.toString()}` : "/v1/intents";
+    const data = await this.request<RawListIntentsResponse>("GET", path, { auth: true });
+
+    return {
+      intents: (data?.intents ?? []).map(mapMetadata),
+      total: data?.total ?? 0,
+      limit: data?.limit ?? params.limit ?? 50,
+      offset: data?.offset ?? params.offset ?? 0,
+    };
+  }
+
+  /**
+   * Fetch metadata for a single intent. Distinct from `verifyIntent` —
+   * this endpoint never returns ciphertext or key material, so it's
+   * safe to call from any service that just needs status / verification
+   * counts / revocation state.
+   */
+  async getIntent(retrievalId: string): Promise<IntentMetadata> {
+    if (!retrievalId) {
+      throw new ValidPayError("invalid_argument", "retrievalId is required");
+    }
+    const data = await this.request<RawIntentMetadata>(
+      "GET",
+      `/v1/intents/${encodeURIComponent(retrievalId)}`,
+      { auth: true },
+    );
+    return mapMetadata(data);
+  }
+
   // === Health ===
 
   async health(): Promise<{ status: string; version?: string }> {
@@ -696,5 +748,23 @@ function buildVerifyResult<T>(
     validFrom: data.valid_from ?? null,
     validUntil: data.valid_until ?? null,
     timeLockStatus: computeTimeLockStatus(data.valid_from, data.valid_until),
+  };
+}
+
+function mapMetadata(raw: RawIntentMetadata): IntentMetadata {
+  return {
+    retrievalId: raw.retrieval_id,
+    documentType: raw.document_type,
+    status: raw.status,
+    createdAt: raw.created_at,
+    revokedAt: raw.revoked_at,
+    revocationReason: raw.revocation_reason,
+    validFrom: raw.valid_from,
+    validUntil: raw.valid_until,
+    commitmentHash: raw.commitment_hash,
+    splitKey: raw.split_key,
+    selectiveDisclosure: raw.selective_disclosure,
+    verificationCount: raw.verification_count,
+    lastVerifiedAt: raw.last_verified_at,
   };
 }

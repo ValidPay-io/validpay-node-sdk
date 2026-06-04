@@ -145,6 +145,34 @@ const fullView = await client.verifySelectiveIntent(retrievalId, key, "full");
 // { amount: 1500, payee: "Alice", memo: "rent" }
 ```
 
+### Audit + list (Prompt 080)
+
+When you need to reconcile your own records against ValidPay — "how many intents did I create this month, and which got scanned?" — use the audit endpoints. **Metadata only; no ciphertext, no key material.**
+
+```ts
+const { intents, total } = await client.listIntents({
+  since: "2026-06-01T00:00:00Z",
+  status: "active",
+  limit: 100,
+});
+//   total: 142
+//   intents[0]: {
+//     retrievalId: "vp_abc123def456",
+//     documentType: "check",
+//     status: "active",
+//     createdAt: "2026-06-04T15:52:25Z",
+//     verificationCount: 3,
+//     lastVerifiedAt: "2026-06-04T16:01:00Z",
+//     ...
+//   }
+
+const meta = await client.getIntent("vp_abc123def456");
+//   status, verificationCount, revokedAt, etc.
+//   Use verifyIntent(retrievalId, key) if you want to decrypt.
+```
+
+Filters: `since` / `until` (ISO datetime), `status` (`active` | `revoked`), `documentType`, `limit` (≤200), `offset`, `order` (`asc` | `desc`).
+
 ### Revocation (Patent H)
 
 ```ts
