@@ -88,6 +88,66 @@ export interface RawBatchCreateResponse {
   results: Array<{ retrieval_id: string; status?: string }>;
 }
 
+export interface ListIntentsParams {
+  /** Max results, default 50, max 200. */
+  limit?: number;
+  offset?: number;
+  /** ISO datetime — only intents created at or after this time. */
+  since?: string;
+  /** ISO datetime — only intents created at or before this time. */
+  until?: string;
+  status?: "active" | "revoked";
+  documentType?: string;
+  /** Ordering by createdAt. Default "desc". */
+  order?: "asc" | "desc";
+}
+
+export interface IntentMetadata {
+  retrievalId: string;
+  documentType: string;
+  status: string;
+  createdAt: string;
+  revokedAt: string | null;
+  revocationReason: string | null;
+  validFrom: string | null;
+  validUntil: string | null;
+  commitmentHash: string | null;
+  splitKey: boolean;
+  selectiveDisclosure: boolean;
+  verificationCount: number;
+  lastVerifiedAt: string | null;
+}
+
+export interface ListIntentsResult {
+  intents: IntentMetadata[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RawIntentMetadata {
+  retrieval_id: string;
+  document_type: string;
+  status: string;
+  created_at: string;
+  revoked_at: string | null;
+  revocation_reason: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
+  commitment_hash: string | null;
+  split_key: boolean;
+  selective_disclosure: boolean;
+  verification_count: number;
+  last_verified_at: string | null;
+}
+
+export interface RawListIntentsResponse {
+  intents: RawIntentMetadata[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface RawFragmentResponse {
   fragment_b?: string;
   error?: string;
