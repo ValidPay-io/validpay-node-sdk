@@ -1,6 +1,6 @@
 # @validpay/node-sdk
 
-Official Node.js SDK for [ValidPay](https://validpay.io) — document verification API with **client-side AES-256-GCM encryption**. Sensitive payloads are encrypted on your server before they ever leave the box; ValidPay stores the ciphertext, and only your verifier (with the key you hand them) can read the contents.
+Official Node.js SDK for [ValidPay](https://validpay.com) — document verification API with **client-side AES-256-GCM encryption**. Sensitive payloads are encrypted on your server before they ever leave the box; ValidPay stores the ciphertext, and only your verifier (with the key you hand them) can read the contents.
 
 - **Zero production dependencies** — Node.js built-in `crypto` + native `fetch` only
 - **AES-256-GCM** authenticated encryption (tampering is detected on decrypt)
@@ -52,7 +52,7 @@ function toBase64Url(b64: string): string {
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-const verifyUrl = `https://validpay.io/verify/${retrievalId}#key=${toBase64Url(key)}`;
+const verifyUrl = `https://validpay.com/verify/${retrievalId}#key=${toBase64Url(key)}`;
 // → encode in a QR, paste in an email, scan with a phone camera.
 // The /verify page reads the fragment client-side and decrypts locally.
 ```
@@ -75,7 +75,7 @@ The key is generated client-side, used client-side, and transmitted client-side.
 | Option    | Type                | Default                     | Notes                                       |
 | --------- | ------------------- | --------------------------- | ------------------------------------------- |
 | `apiKey`  | `string` (required) | —                           | Your ValidPay issuer API key.               |
-| `baseUrl` | `string`            | `"https://api.validpay.io"` | Override for staging or self-hosted setups. |
+| `baseUrl` | `string`            | `"https://api.validpay.com"` | Override for staging or self-hosted setups. |
 | `timeout` | `number`            | `30000`                     | Request timeout (ms).                       |
 | `fetch`   | `typeof fetch`      | global `fetch`              | Inject a custom fetch (useful for testing). |
 
