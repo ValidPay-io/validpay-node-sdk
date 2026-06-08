@@ -32,7 +32,7 @@ import {
   type RawListIntentsResponse,
 } from "./types.js";
 
-const DEFAULT_BASE_URL = "https://api.validpay.io";
+const DEFAULT_BASE_URL = "https://api.validpay.com";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 type Method = "GET" | "POST" | "PATCH";

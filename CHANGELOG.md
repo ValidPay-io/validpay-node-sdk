@@ -4,6 +4,16 @@ All notable changes to `@validpay/node-sdk` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-06-08
+
+### Changed
+- `DEFAULT_BASE_URL` is now `https://api.validpay.com` (Prompt 086B —
+  primary domain migrated from validpay.io to validpay.com). The old
+  `api.validpay.io` continues to work via Cloudflare 301 redirects, so
+  existing installations on 0.3.0 are unaffected; new installs default
+  to the .com origin. `baseUrl` override still wins when set.
+- README links + sample verify URL updated to `validpay.com`.
+
 ## [0.3.0] — 2026-06-04
 
 ### Added
