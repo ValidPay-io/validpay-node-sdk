@@ -6,6 +6,7 @@ import {
   generateKey,
   commitmentHash,
   splitKey,
+  combineKeyShares,
   encryptFields,
   buildKeyMap,
 } from "../src/crypto.js";
@@ -24,6 +25,9 @@ describe("ValidPayClient", () => {
   });
 
   it("createIntent encrypts client-side, posts to /v1/intent, sends commitment hash, never sends key", async () => {
+    // Since 0.4.0 createIntent defaults to split-key: result.key is Share A,
+    // Share B travels to the server, and neither the full key nor the
+    // plaintext ever appears on the wire.
     const fetchMock = vi.fn(async () =>
       jsonResponse(201, { retrieval_id: "vp_abc123def456", status: "active" }),
     );
@@ -54,14 +58,44 @@ describe("ValidPayClient", () => {
     expect(typeof sentBody.encrypted_payload).toBe("string");
     expect(typeof sentBody.commitment_hash).toBe("string");
     expect(sentBody.commitment_hash).toBe(commitmentHash(JSON.stringify(payload)));
+    expect(sentBody.split_key).toBe(true);
+    expect(typeof sentBody.key_fragment_b).toBe("string");
 
-    // CRITICAL: key must never appear in the request body, URL, or headers
+    // CRITICAL: Share A (the returned key) must never appear in the
+    // request body, URL, or headers
     const fullCall = JSON.stringify({ url: calledUrl, init });
     expect(fullCall).not.toContain(result.key);
     expect(fullCall).not.toContain("123-45-6789");
     expect(fullCall).not.toContain("Jane Doe");
 
-    // And the encrypted_payload should actually decrypt back to the original
+    // Share A (returned) XOR Share B (sent) reconstructs the full key —
+    // which itself never appears on the wire — and decrypts the payload.
+    const fullKey = combineKeyShares(result.key, sentBody.key_fragment_b);
+    expect(fullCall).not.toContain(fullKey);
+    const decrypted = JSON.parse(decrypt(sentBody.encrypted_payload, fullKey));
+    expect(decrypted).toEqual(payload);
+  });
+
+  it("createIntent with splitKey:false is the legacy single-key flow", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(201, { retrieval_id: "vp_legacy1", status: "active" }),
+    );
+    const client = new ValidPayClient({
+      apiKey: "test_key",
+      baseUrl: "https://api.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    const payload = { amount: "100.00" };
+    const result = await client.createIntent({
+      documentType: "check",
+      payload,
+      splitKey: false,
+    });
+
+    const sentBody = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(sentBody.split_key).toBeUndefined();
+    expect(sentBody.key_fragment_b).toBeUndefined();
     const decrypted = JSON.parse(decrypt(sentBody.encrypted_payload, result.key));
     expect(decrypted).toEqual(payload);
   });
@@ -287,11 +321,19 @@ describe("ValidPayClient", () => {
     });
   });
 
-  it("verifyIntent redirects to verifySplitKeyIntent when split_key flag is set", async () => {
-    const key = generateKey();
-    const blob = encrypt(JSON.stringify({ a: 1 }), key);
-    const fetchMock = vi.fn(async () =>
-      jsonResponse(200, {
+  it("verifyIntent transparently verifies a split-key intent (key = Share A)", async () => {
+    // Since 0.4.0 the natural createIntent -> verifyIntent round trip
+    // works on split-key intents: verifyIntent fetches Share B from the
+    // fragment endpoint and XOR-combines it with the Share A it was given.
+    const fullKey = generateKey();
+    const [shareA, shareB] = splitKey(fullKey);
+    const payload = { a: 1 };
+    const blob = encrypt(JSON.stringify(payload), fullKey);
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/fragment")) {
+        return jsonResponse(200, { intent_id: "vp_sk", fragment_b: shareB });
+      }
+      return jsonResponse(200, {
         intent_id: "vp_sk",
         encrypted_payload: blob,
         issuer: "x",
@@ -299,16 +341,21 @@ describe("ValidPayClient", () => {
         registered_at: "2026-01-01T00:00:00Z",
         status: "active",
         split_key: true,
-      }),
-    );
+        commitment_hash: commitmentHash(JSON.stringify(payload)),
+      });
+    });
     const client = new ValidPayClient({
       apiKey: "k",
       baseUrl: "https://api.example.test",
       fetch: fetchMock as unknown as typeof fetch,
     });
-    await expect(client.verifyIntent("vp_sk", key)).rejects.toMatchObject({
-      code: "split_key_required",
-    });
+    const result = await client.verifyIntent("vp_sk", shareA);
+    expect(result.payload).toEqual(payload);
+    expect(result.integrityVerified).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]![0])).toBe(
+      "https://api.example.test/v1/intent/vp_sk/fragment",
+    );
   });
 
   it("verifyIntent and createIntent require their arguments", async () => {
