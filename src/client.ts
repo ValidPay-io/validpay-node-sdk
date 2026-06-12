@@ -42,6 +42,20 @@ interface RequestOpts {
   auth: boolean;
 }
 
+let splitKeyDeprecationEmitted = false;
+function emitSplitKeyDeprecation(): void {
+  if (splitKeyDeprecationEmitted) return;
+  splitKeyDeprecationEmitted = true;
+  const message =
+    "createSplitKeyIntent() is deprecated since @validpay/node-sdk 0.4.0: " +
+    "createIntent() uses split-key protection by default. Call createIntent() instead.";
+  if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
+    process.emitWarning(message, "DeprecationWarning");
+  } else {
+    console.warn(message);
+  }
+}
+
 export class ValidPayClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -60,15 +74,32 @@ export class ValidPayClient {
 
   // === Core ===
 
+  /**
+   * Encrypt `payload` locally and register it with the ValidPay API.
+   *
+   * Since 0.4.0 this uses **split-key protection (Patent C) by default**:
+   * the AES-256 key is split into two XOR shares — Share A is returned as
+   * `key` (embed it in the QR code exactly as before), Share B is stored
+   * on the ValidPay server. The full decryption key never exists on any
+   * single system after this call returns. Pass `splitKey: false` for the
+   * legacy single-key flow.
+   */
   async createIntent(params: CreateIntentParams): Promise<CreateIntentResult> {
     if (!params.documentType) {
       throw new ValidPayError("invalid_argument", "documentType is required");
     }
     validateTimeLock(params.validFrom, params.validUntil);
 
-    const key = generateKey();
+    const splitKey = params.splitKey !== false;
+    const fullKey = generateKey();
+    let resultKey = fullKey;
+    let shareB: string | undefined;
+    if (splitKey) {
+      [resultKey, shareB] = splitKeyFn(fullKey);
+    }
+
     const plaintext = JSON.stringify(params.payload);
-    const encrypted_payload = encrypt(plaintext, key);
+    const encrypted_payload = encrypt(plaintext, fullKey);
     const commitment_hash = commitmentHash(plaintext);
 
     const body: Record<string, unknown> = {
@@ -76,6 +107,10 @@ export class ValidPayClient {
       encrypted_payload,
       commitment_hash,
     };
+    if (splitKey) {
+      body["split_key"] = true;
+      body["key_fragment_b"] = shareB;
+    }
     if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
     if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;
 
@@ -89,7 +124,7 @@ export class ValidPayClient {
         details: data,
       });
     }
-    return { retrievalId: data.retrieval_id, key };
+    return { retrievalId: data.retrieval_id, key: resultKey };
   }
 
   async createIntentBatch(items: BatchIntentItem[]): Promise<CreateIntentResult[]> {
@@ -205,14 +240,16 @@ export class ValidPayClient {
         "This intent uses selective field disclosure. Use verifySelectiveIntent(retrievalId, key, role) instead.",
       );
     }
+    // Split-Key Verification (Patent C). Since 0.4.0 split-key is the
+    // default issue path, so the key the caller holds is Share A — fetch
+    // Share B from the fragment endpoint and XOR-combine, so the natural
+    // createIntent -> verifyIntent round trip keeps working.
+    let decryptionKey = key;
     if (data.split_key) {
-      throw new ValidPayError(
-        "split_key_required",
-        `Intent ${retrievalId} uses split-key protection. Use verifySplitKeyIntent(retrievalId, shareA) instead.`,
-      );
+      decryptionKey = combineKeyShares(key, await this.fetchFragmentB(retrievalId));
     }
 
-    const decrypted = decrypt(data.encrypted_payload, key);
+    const decrypted = decrypt(data.encrypted_payload, decryptionKey);
 
     const integrityVerified = checkCommitment(data.commitment_hash, decrypted);
 
@@ -230,40 +267,34 @@ export class ValidPayClient {
 
   // === Split-key (Patent C) ===
 
+  /**
+   * @deprecated Since 0.4.0 `createIntent()` uses split-key protection by
+   * default, so this alias adds nothing. Call `createIntent()` instead.
+   * Kept so 0.3.x code keeps working; will be removed in 1.0.
+   */
   async createSplitKeyIntent(params: CreateIntentParams): Promise<CreateIntentResult> {
-    if (!params.documentType) {
-      throw new ValidPayError("invalid_argument", "documentType is required");
-    }
-    validateTimeLock(params.validFrom, params.validUntil);
+    emitSplitKeyDeprecation();
+    return this.createIntent({ ...params, splitKey: true });
+  }
 
-    const fullKey = generateKey();
-    const [shareA, shareB] = splitKeyFn(fullKey);
-
-    const plaintext = JSON.stringify(params.payload);
-    const encrypted_payload = encrypt(plaintext, fullKey);
-    const commitment_hash = commitmentHash(plaintext);
-
-    const body: Record<string, unknown> = {
-      document_type: params.documentType,
-      encrypted_payload,
-      commitment_hash,
-      split_key: true,
-      key_fragment_b: shareB,
-    };
-    if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
-    if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;
-
-    const data = await this.request<RawCreateIntentResponse>("POST", "/v1/intent", {
-      body,
-      auth: true,
-    });
-
-    if (!data?.retrieval_id) {
-      throw new ValidPayError("invalid_response", "API response missing retrieval_id", {
-        details: data,
+  /** Fetch Share B from the public fragment endpoint (Patent C). */
+  private async fetchFragmentB(retrievalId: string): Promise<string> {
+    const frag = await this.request<RawFragmentResponse>(
+      "GET",
+      `/v1/intent/${encodeURIComponent(retrievalId)}/fragment`,
+      { auth: false },
+    );
+    if (frag?.error) {
+      throw new ValidPayError(frag.error, `Fragment retrieval failed: ${frag.error}`, {
+        details: frag,
       });
     }
-    return { retrievalId: data.retrieval_id, key: shareA };
+    if (!frag?.fragment_b) {
+      throw new ValidPayError("missing_fragment", "Server did not return key fragment", {
+        details: frag,
+      });
+    }
+    return frag.fragment_b;
   }
 
   async verifySplitKeyIntent<T = unknown>(
@@ -299,23 +330,7 @@ export class ValidPayClient {
       );
     }
 
-    const frag = await this.request<RawFragmentResponse>(
-      "GET",
-      `/v1/intent/${encodeURIComponent(retrievalId)}/fragment`,
-      { auth: false },
-    );
-    if (frag?.error) {
-      throw new ValidPayError(frag.error, `Fragment retrieval failed: ${frag.error}`, {
-        details: frag,
-      });
-    }
-    if (!frag?.fragment_b) {
-      throw new ValidPayError("missing_fragment", "Server did not return key fragment", {
-        details: frag,
-      });
-    }
-
-    const fullKey = combineKeyShares(shareA, frag.fragment_b);
+    const fullKey = combineKeyShares(shareA, await this.fetchFragmentB(retrievalId));
     const decrypted = decrypt(data.encrypted_payload, fullKey);
 
     const integrityVerified = checkCommitment(data.commitment_hash, decrypted);

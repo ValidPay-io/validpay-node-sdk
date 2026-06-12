@@ -4,6 +4,27 @@ All notable changes to `@validpay/node-sdk` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-06-12
+
+### Changed
+
+- **Split-key protection (Patent C) is now the default** (Prompt 094).
+  `createIntent()` splits the AES key into two XOR shares: Share A is
+  returned as `key`, Share B is stored on the ValidPay server. The full
+  decryption key never exists on any single system after the call
+  returns. Pass `splitKey: false` for the legacy single-key flow.
+- `verifyIntent()` now verifies split-key intents transparently: when
+  the API marks an intent `split_key`, it fetches Share B from the
+  fragment endpoint and XOR-combines it with the key you pass (Share A),
+  instead of throwing `split_key_required`. Legacy intents verify
+  exactly as before.
+
+### Deprecated
+
+- `createSplitKeyIntent()` — now an alias for `createIntent()` (which
+  does split-key by default). Emits a `DeprecationWarning` once per
+  process; will be removed in 1.0.
+
 ## [0.3.1] — 2026-06-08
 
 ### Changed

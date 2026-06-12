@@ -10,6 +10,13 @@ export interface CreateIntentParams {
   payload: unknown;
   validFrom?: string;
   validUntil?: string;
+  /**
+   * Split-key protection (Patent C). Default `true` since 0.4.0: the
+   * returned `key` is Share A of the AES key and Share B is stored on
+   * the ValidPay server — neither alone decrypts. Set `false` for the
+   * legacy single-key flow where `key` is the full AES key.
+   */
+  splitKey?: boolean;
 }
 
 export interface BatchIntentItem {

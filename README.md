@@ -25,14 +25,17 @@ import { ValidPayClient } from "@validpay/node-sdk";
 
 const client = new ValidPayClient({ apiKey: process.env.VALIDPAY_API_KEY! });
 
-// 1. Issuer side — register an intent with sensitive payload
+// 1. Issuer side — register an intent with sensitive payload.
+// Split-key protection (Patent C) is the default since 0.4.0: `key` is
+// Share A of the AES key; Share B is stored on the ValidPay server. The
+// full decryption key never exists on any single system.
 const { retrievalId, key } = await client.createIntent({
   documentType: "ssn_card",
   payload: { ssn: "123-45-6789", name: "Jane Doe" },
 });
 
 // retrievalId is public (e.g. "vp_abc123def456") — embed in a QR code.
-// key is secret — deliver it ONLY to the intended verifier, out-of-band.
+// key (Share A) is secret — deliver it ONLY to the intended verifier, out-of-band.
 
 // 2. Verifier side — fetch and decrypt (no API key needed)
 const result = await client.verifyIntent<{ ssn: string; name: string }>(retrievalId, key);
@@ -81,9 +84,9 @@ The key is generated client-side, used client-side, and transmitted client-side.
 
 ### Core
 
-#### `client.createIntent({ documentType, payload, validFrom?, validUntil? }) → { retrievalId, key }`
+#### `client.createIntent({ documentType, payload, validFrom?, validUntil?, splitKey? }) → { retrievalId, key }`
 
-Generates a key, encrypts `JSON.stringify(payload)`, posts ciphertext + commitment hash to `/v1/intent`. **The key is never sent to the API.**
+Generates a key, encrypts `JSON.stringify(payload)`, posts ciphertext + commitment hash to `/v1/intent`. Defaults to split-key (Patent C): the returned `key` is Share A and Share B goes to the server — neither alone decrypts. Pass `splitKey: false` for the legacy flow where `key` is the full AES key. **The full key is never sent to the API.**
 
 #### `client.createIntentBatch(items[]) → { retrievalId, key }[]`
 
@@ -113,18 +116,27 @@ interface VerifyIntentResult<T> {
 }
 ```
 
-### Split-key (Patent C)
+### Split-key (Patent C) — the default
+
+All documents created with SDK v0.4+ use split-key by default — `createIntent`
+returns Share A and stores Share B at the API; `verifyIntent` detects a
+split-key intent, fetches Share B from `/v1/intent/:id/fragment`,
+XOR-combines, and decrypts:
 
 ```ts
-const { retrievalId, key: shareA } = await client.createSplitKeyIntent({
+const { retrievalId, key: shareA } = await client.createIntent({
   documentType: "ssn_card",
   payload: { ssn: "123-45-6789" },
 });
 // shareA goes in the QR; shareB stays at the API.
 
-const result = await client.verifySplitKeyIntent(retrievalId, shareA);
-// SDK fetches shareB from /v1/intent/:id/fragment, XOR-combines, decrypts.
+const result = await client.verifyIntent(retrievalId, shareA);
 ```
+
+Backward compatibility: `createIntent({ ..., splitKey: false })` gives the
+legacy single-key flow; `createSplitKeyIntent()` is a deprecated alias of
+`createIntent()` (emits a `DeprecationWarning`); `verifySplitKeyIntent()`
+still works.
 
 ### Selective disclosure (Patent E)
 
