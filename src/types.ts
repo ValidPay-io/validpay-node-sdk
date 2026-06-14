@@ -77,6 +77,9 @@ export interface RawIntentResponse {
   registered_at: string;
   status: string;
   commitment_hash?: string;
+  /** 1 = legacy SHA-256(plaintext), skipped on verify; 2 = SHA-256(ciphertext),
+   *  enforced. Absent is treated as 1 (Prompt 097 C-1). */
+  commitment_version?: number;
   valid_from?: string | null;
   valid_until?: string | null;
   selective_disclosure?: boolean;

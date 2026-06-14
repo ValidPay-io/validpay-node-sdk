@@ -76,8 +76,18 @@ export function decrypt(blob: string, key: string): string {
   }
 }
 
-export function commitmentHash(plaintext: string): string {
-  return createHash("sha256").update(plaintext, "utf8").digest("hex");
+/**
+ * SHA-256 commitment over the *ciphertext* blob (commitment v2).
+ *
+ * Pass the base64 wire blob from {@link encrypt} — NOT the plaintext.
+ * Hashing the ciphertext lets the commitment be published on the public
+ * verify endpoint without becoming a confirmation oracle: SHA-256(plaintext)
+ * over a low-entropy structured document can be brute-forced offline to
+ * recover contents without the key (Prompt 097 C-1). It still proves the
+ * server hasn't swapped the blob — the verifier recomputes and compares.
+ */
+export function commitmentHash(ciphertextB64: string): string {
+  return createHash("sha256").update(ciphertextB64, "utf8").digest("hex");
 }
 
 export function splitKey(key: string): [string, string] {
