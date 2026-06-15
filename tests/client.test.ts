@@ -5,6 +5,7 @@ import {
   encrypt,
   generateKey,
   commitmentHash,
+  buildAad,
   splitKey,
   combineKeyShares,
   encryptFields,
@@ -62,6 +63,8 @@ describe("ValidPayClient", () => {
     expect(sentBody.commitment_hash).not.toBe(commitmentHash(JSON.stringify(payload)));
     expect(sentBody.split_key).toBe(true);
     expect(typeof sentBody.key_fragment_b).toBe("string");
+    // M-5: AAD-bound, declared as encryption_version 2.
+    expect(sentBody.encryption_version).toBe(2);
 
     // CRITICAL: Share A (the returned key) must never appear in the
     // request body, URL, or headers
@@ -74,7 +77,10 @@ describe("ValidPayClient", () => {
     // which itself never appears on the wire — and decrypts the payload.
     const fullKey = combineKeyShares(result.key, sentBody.key_fragment_b);
     expect(fullCall).not.toContain(fullKey);
-    const decrypted = JSON.parse(decrypt(sentBody.encrypted_payload, fullKey));
+    // M-5: the blob is AAD-bound, so pass the same AAD the create call used.
+    const decrypted = JSON.parse(
+      decrypt(sentBody.encrypted_payload, fullKey, buildAad("ssn_card")),
+    );
     expect(decrypted).toEqual(payload);
   });
 
@@ -98,7 +104,10 @@ describe("ValidPayClient", () => {
     const sentBody = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
     expect(sentBody.split_key).toBeUndefined();
     expect(sentBody.key_fragment_b).toBeUndefined();
-    const decrypted = JSON.parse(decrypt(sentBody.encrypted_payload, result.key));
+    // M-5: createIntent binds AAD even for the legacy single-key flow.
+    const decrypted = JSON.parse(
+      decrypt(sentBody.encrypted_payload, result.key, buildAad("check")),
+    );
     expect(decrypted).toEqual(payload);
   });
 

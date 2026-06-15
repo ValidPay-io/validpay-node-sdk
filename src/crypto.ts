@@ -31,16 +31,18 @@ function decodeKey(key: string): Buffer {
   return buf;
 }
 
-export function encrypt(plaintext: string, key: string): string {
+export function encrypt(plaintext: string, key: string, aad?: string): string {
   const keyBuf = decodeKey(key);
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv(ALGORITHM, keyBuf, iv);
+  // M-5: bind metadata as Associated Authenticated Data. Must precede update().
+  if (aad) cipher.setAAD(Buffer.from(aad, "utf8"));
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return Buffer.concat([iv, authTag, ciphertext]).toString("base64");
 }
 
-export function decrypt(blob: string, key: string): string {
+export function decrypt(blob: string, key: string, aad?: string): string {
   const keyBuf = decodeKey(key);
 
   let buf: Buffer;
@@ -63,6 +65,7 @@ export function decrypt(blob: string, key: string): string {
 
   const decipher = createDecipheriv(ALGORITHM, keyBuf, iv);
   decipher.setAuthTag(authTag);
+  if (aad) decipher.setAAD(Buffer.from(aad, "utf8"));
 
   try {
     const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
@@ -70,10 +73,37 @@ export function decrypt(blob: string, key: string): string {
   } catch (cause) {
     throw new ValidPayError(
       "decryption_failed",
-      "Decryption failed — wrong key or tampered blob",
+      "Decryption failed — wrong key, tampered blob, or altered bound metadata",
       { cause },
     );
   }
+}
+
+/**
+ * Canonical AAD for AES-GCM metadata binding (Prompt 097 M-5). MUST be
+ * byte-identical across every SDK and the website verifier:
+ *   - fixed key order (document_type, valid_from, valid_until);
+ *   - compact JSON (JSON.stringify default — no spaces);
+ *   - timestamps normalized to epoch milliseconds, NOT raw ISO strings (the
+ *     server reformats ISO timestamps, which would break verification of
+ *     legitimate time-locked documents).
+ */
+export function buildAad(
+  documentType: string,
+  validFrom?: string | null,
+  validUntil?: string | null,
+): string {
+  return JSON.stringify({
+    document_type: documentType,
+    valid_from: epochMs(validFrom),
+    valid_until: epochMs(validUntil),
+  });
+}
+
+function epochMs(iso?: string | null): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
 }
 
 /**
