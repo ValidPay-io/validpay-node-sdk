@@ -100,7 +100,8 @@ export class ValidPayClient {
 
     const plaintext = JSON.stringify(params.payload);
     const encrypted_payload = encrypt(plaintext, fullKey);
-    const commitment_hash = commitmentHash(plaintext);
+    // Commitment v2: hash the ciphertext, not the plaintext (C-1).
+    const commitment_hash = commitmentHash(encrypted_payload);
 
     const body: Record<string, unknown> = {
       document_type: params.documentType,
@@ -162,10 +163,12 @@ export class ValidPayClient {
       const k = generateKey();
       keys.push(k);
       const plaintext = JSON.stringify(item.payload);
+      const item_encrypted_payload = encrypt(plaintext, k);
       const req: Record<string, unknown> = {
         document_type: item.documentType,
-        encrypted_payload: encrypt(plaintext, k),
-        commitment_hash: commitmentHash(plaintext),
+        encrypted_payload: item_encrypted_payload,
+        // Commitment v2: hash the ciphertext, not the plaintext (C-1).
+        commitment_hash: commitmentHash(item_encrypted_payload),
       };
       if (item.validFrom !== undefined) req["valid_from"] = item.validFrom;
       if (item.validUntil !== undefined) req["valid_until"] = item.validUntil;
@@ -251,7 +254,7 @@ export class ValidPayClient {
 
     const decrypted = decrypt(data.encrypted_payload, decryptionKey);
 
-    const integrityVerified = checkCommitment(data.commitment_hash, decrypted);
+    const integrityVerified = checkCommitment(data);
 
     let payload: T;
     try {
@@ -333,7 +336,7 @@ export class ValidPayClient {
     const fullKey = combineKeyShares(shareA, await this.fetchFragmentB(retrievalId));
     const decrypted = decrypt(data.encrypted_payload, fullKey);
 
-    const integrityVerified = checkCommitment(data.commitment_hash, decrypted);
+    const integrityVerified = checkCommitment(data);
 
     let payload: T;
     try {
@@ -386,8 +389,10 @@ export class ValidPayClient {
     const keyMap = buildKeyMap(fieldKeys, params.disclosurePolicy);
     const encrypted_key_map = encrypt(JSON.stringify(keyMap), masterKey);
 
-    const fullPlaintext = JSON.stringify(params.payload);
-    const commitment_hash = commitmentHash(fullPlaintext);
+    const envelope = JSON.stringify(encryptedFields);
+    // Commitment v2: hash the transported ciphertext envelope, not the
+    // plaintext (C-1). Role-independent at verify time.
+    const commitment_hash = commitmentHash(envelope);
 
     let qrKey = masterKey;
     let key_fragment_b: string | undefined;
@@ -399,7 +404,7 @@ export class ValidPayClient {
 
     const body: Record<string, unknown> = {
       document_type: params.documentType,
-      encrypted_payload: JSON.stringify(encryptedFields),
+      encrypted_payload: envelope,
       commitment_hash,
       selective_disclosure: true,
       disclosure_policy: JSON.stringify(params.disclosurePolicy),
@@ -515,19 +520,9 @@ export class ValidPayClient {
 
     const payload = decryptFields(encryptedFields, fieldKeys);
 
-    let integrityVerified = false;
-    if (data.commitment_hash && role === "full") {
-      const allKeys = keyMap["full"] ?? {};
-      const fullPayload = decryptFields(encryptedFields, allKeys);
-      const actual = commitmentHash(JSON.stringify(fullPayload));
-      if (actual !== data.commitment_hash) {
-        throw new ValidPayError(
-          "integrity_failure",
-          "INTEGRITY VERIFICATION FAILED — the decrypted payload does not match the commitment hash stored at issuance.",
-        );
-      }
-      integrityVerified = true;
-    }
+    // Commitment over the ciphertext envelope (C-1) — role-independent now,
+    // so any role gets integrity verification. Legacy v1 intents skip it.
+    const integrityVerified = checkCommitment(data);
 
     return buildVerifyResult(data, payload, integrityVerified);
   }
@@ -701,13 +696,24 @@ export class ValidPayClient {
 
 // === Helpers ===
 
-function checkCommitment(expected: string | undefined, plaintext: string): boolean {
-  if (!expected) return false;
-  const actual = commitmentHash(plaintext);
-  if (actual !== expected) {
+/**
+ * Version-aware commitment check (Prompt 097 C-1). v2 commitments are
+ * SHA-256(ciphertext): recompute over the received blob and compare. v1
+ * (legacy SHA-256(plaintext)) is a confirmation-oracle risk and is skipped —
+ * those documents expire naturally. Throws on a v2 mismatch.
+ */
+function checkCommitment(data: {
+  commitment_hash?: string;
+  commitment_version?: number;
+  encrypted_payload: string | null;
+}): boolean {
+  if (!data.commitment_hash || !data.encrypted_payload) return false;
+  if ((data.commitment_version ?? 1) < 2) return false;
+  const actual = commitmentHash(data.encrypted_payload);
+  if (actual !== data.commitment_hash) {
     throw new ValidPayError(
       "integrity_failure",
-      "INTEGRITY VERIFICATION FAILED — the decrypted payload does not match the commitment hash stored at issuance.",
+      "INTEGRITY VERIFICATION FAILED — the ciphertext does not match the commitment hash recorded at issuance. This document may have been tampered with.",
     );
   }
   return true;

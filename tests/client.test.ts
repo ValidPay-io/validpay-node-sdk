@@ -57,7 +57,9 @@ describe("ValidPayClient", () => {
     expect(sentBody.document_type).toBe("ssn_card");
     expect(typeof sentBody.encrypted_payload).toBe("string");
     expect(typeof sentBody.commitment_hash).toBe("string");
-    expect(sentBody.commitment_hash).toBe(commitmentHash(JSON.stringify(payload)));
+    // C-1: commitment is over the ciphertext, not the plaintext.
+    expect(sentBody.commitment_hash).toBe(commitmentHash(sentBody.encrypted_payload));
+    expect(sentBody.commitment_hash).not.toBe(commitmentHash(JSON.stringify(payload)));
     expect(sentBody.split_key).toBe(true);
     expect(typeof sentBody.key_fragment_b).toBe("string");
 
@@ -162,13 +164,15 @@ describe("ValidPayClient", () => {
     const key = generateKey();
     const plaintext = JSON.stringify({ ssn: "111-22-3333" });
     const blob = encrypt(plaintext, key);
-    const commitment = commitmentHash(plaintext);
+    // C-1: commitment v2 over the ciphertext, response carries the version.
+    const commitment = commitmentHash(blob);
 
     const fetchMock = vi.fn(async () =>
       jsonResponse(200, {
         intent_id: "vp_id_1",
         encrypted_payload: blob,
         commitment_hash: commitment,
+        commitment_version: 2,
         issuer: "Acme Bank",
         issuer_verified: true,
         registered_at: "2026-04-29T12:00:00.000Z",
@@ -240,6 +244,7 @@ describe("ValidPayClient", () => {
         intent_id: "vp_x",
         encrypted_payload: blob,
         commitment_hash: "deadbeef".repeat(8),
+        commitment_version: 2,
         issuer: "X",
         issuer_verified: true,
         registered_at: "2026-01-01T00:00:00Z",
@@ -341,7 +346,9 @@ describe("ValidPayClient", () => {
         registered_at: "2026-01-01T00:00:00Z",
         status: "active",
         split_key: true,
-        commitment_hash: commitmentHash(JSON.stringify(payload)),
+        // C-1: commitment v2 over the ciphertext.
+        commitment_hash: commitmentHash(blob),
+        commitment_version: 2,
       });
     });
     const client = new ValidPayClient({
@@ -433,7 +440,7 @@ describe("ValidPayClient", () => {
     const fullKey = generateKey();
     const plaintext = JSON.stringify({ ssn: "555-44-3322" });
     const blob = encrypt(plaintext, fullKey);
-    const commitment = commitmentHash(plaintext);
+    const commitment = commitmentHash(blob); // C-1: over ciphertext
     const [shareA, shareB] = splitKey(fullKey);
 
     let callCount = 0;
@@ -447,6 +454,7 @@ describe("ValidPayClient", () => {
           intent_id: "vp_sk1",
           encrypted_payload: blob,
           commitment_hash: commitment,
+          commitment_version: 2,
           issuer: "Bank",
           issuer_verified: true,
           registered_at: "2026-01-01T00:00:00Z",
@@ -501,12 +509,16 @@ describe("ValidPayClient", () => {
     const { encryptedFields, fieldKeys } = encryptFields(payload);
     const keyMap = buildKeyMap(fieldKeys, { bank: ["amount"] });
     const encryptedKeyMap = encrypt(JSON.stringify(keyMap), masterKey);
+    const envelope = JSON.stringify(encryptedFields);
+    // C-1: commitment v2 over the ciphertext envelope.
+    const envelopeCommitment = commitmentHash(envelope);
 
     const fetchMock = vi.fn(async () =>
       jsonResponse(200, {
         intent_id: "vp_sel",
-        encrypted_payload: JSON.stringify(encryptedFields),
-        commitment_hash: commitmentHash(JSON.stringify(payload)),
+        encrypted_payload: envelope,
+        commitment_hash: envelopeCommitment,
+        commitment_version: 2,
         issuer: "Issuer",
         issuer_verified: true,
         registered_at: "2026-01-01T00:00:00Z",
@@ -533,8 +545,9 @@ describe("ValidPayClient", () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse(200, {
         intent_id: "vp_sel",
-        encrypted_payload: JSON.stringify(encryptedFields),
-        commitment_hash: commitmentHash(JSON.stringify(payload)),
+        encrypted_payload: envelope,
+        commitment_hash: envelopeCommitment,
+        commitment_version: 2,
         issuer: "Issuer",
         issuer_verified: true,
         registered_at: "2026-01-01T00:00:00Z",
