@@ -3,6 +3,7 @@ import {
   encrypt,
   decrypt,
   commitmentHash,
+  buildAad,
   splitKey as splitKeyFn,
   combineKeyShares,
   encryptFields,
@@ -99,7 +100,9 @@ export class ValidPayClient {
     }
 
     const plaintext = JSON.stringify(params.payload);
-    const encrypted_payload = encrypt(plaintext, fullKey);
+    // M-5: bind document_type + validity window as AAD.
+    const aad = buildAad(params.documentType, params.validFrom, params.validUntil);
+    const encrypted_payload = encrypt(plaintext, fullKey, aad);
     // Commitment v2: hash the ciphertext, not the plaintext (C-1).
     const commitment_hash = commitmentHash(encrypted_payload);
 
@@ -107,6 +110,7 @@ export class ValidPayClient {
       document_type: params.documentType,
       encrypted_payload,
       commitment_hash,
+      encryption_version: 2,
     };
     if (splitKey) {
       body["split_key"] = true;
@@ -163,12 +167,15 @@ export class ValidPayClient {
       const k = generateKey();
       keys.push(k);
       const plaintext = JSON.stringify(item.payload);
-      const item_encrypted_payload = encrypt(plaintext, k);
+      // M-5: bind document_type + validity window as AAD per item.
+      const itemAad = buildAad(item.documentType, item.validFrom, item.validUntil);
+      const item_encrypted_payload = encrypt(plaintext, k, itemAad);
       const req: Record<string, unknown> = {
         document_type: item.documentType,
         encrypted_payload: item_encrypted_payload,
         // Commitment v2: hash the ciphertext, not the plaintext (C-1).
         commitment_hash: commitmentHash(item_encrypted_payload),
+        encryption_version: 2,
       };
       if (item.validFrom !== undefined) req["valid_from"] = item.validFrom;
       if (item.validUntil !== undefined) req["valid_until"] = item.validUntil;
@@ -252,7 +259,8 @@ export class ValidPayClient {
       decryptionKey = combineKeyShares(key, await this.fetchFragmentB(retrievalId));
     }
 
-    const decrypted = decrypt(data.encrypted_payload, decryptionKey);
+    // M-5: reconstruct the AAD for v2 intents.
+    const decrypted = decrypt(data.encrypted_payload, decryptionKey, aadFor(data));
 
     const integrityVerified = checkCommitment(data);
 
@@ -334,7 +342,8 @@ export class ValidPayClient {
     }
 
     const fullKey = combineKeyShares(shareA, await this.fetchFragmentB(retrievalId));
-    const decrypted = decrypt(data.encrypted_payload, fullKey);
+    // M-5: reconstruct the AAD for v2 intents.
+    const decrypted = decrypt(data.encrypted_payload, fullKey, aadFor(data));
 
     const integrityVerified = checkCommitment(data);
 
@@ -717,6 +726,16 @@ function checkCommitment(data: {
     );
   }
   return true;
+}
+
+/**
+ * AAD to pass to decrypt for a verify response (Prompt 097 M-5). v2 intents
+ * reconstruct it from the server-returned metadata so altered document_type
+ * or validity window fails the GCM tag check. undefined for legacy v1.
+ */
+function aadFor(data: RawIntentResponse): string | undefined {
+  if ((data.encryption_version ?? 1) < 2) return undefined;
+  return buildAad(data.document_type ?? "", data.valid_from, data.valid_until);
 }
 
 function computeTimeLockStatus(

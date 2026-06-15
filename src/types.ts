@@ -76,10 +76,14 @@ export interface RawIntentResponse {
   issuer_verified: boolean;
   registered_at: string;
   status: string;
+  document_type?: string;
   commitment_hash?: string;
   /** 1 = legacy SHA-256(plaintext), skipped on verify; 2 = SHA-256(ciphertext),
    *  enforced. Absent is treated as 1 (Prompt 097 C-1). */
   commitment_version?: number;
+  /** 1 = no AAD (legacy); 2 = {document_type, valid_from, valid_until} bound
+   *  as AES-GCM AAD. Absent is treated as 1 (Prompt 097 M-5). */
+  encryption_version?: number;
   valid_from?: string | null;
   valid_until?: string | null;
   selective_disclosure?: boolean;

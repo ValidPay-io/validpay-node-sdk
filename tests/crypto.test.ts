@@ -4,6 +4,7 @@ import {
   encrypt,
   decrypt,
   commitmentHash,
+  buildAad,
   splitKey,
   combineKeyShares,
   encryptFields,
@@ -11,6 +12,26 @@ import {
   decryptFields,
 } from "../src/crypto.js";
 import { ValidPayError } from "../src/types.js";
+
+describe("AAD binding (M-5)", () => {
+  it("round-trips with matching AAD", () => {
+    const key = generateKey();
+    const aad = buildAad("check", null, "2026-08-01T00:00:00Z");
+    expect(decrypt(encrypt('{"amount":100}', key, aad), key, aad)).toBe('{"amount":100}');
+  });
+
+  it("fails when the AAD is altered", () => {
+    const key = generateKey();
+    const blob = encrypt('{"amount":100}', key, buildAad("check"));
+    expect(() => decrypt(blob, key, buildAad("other"))).toThrow(ValidPayError);
+  });
+
+  it("produces the canonical compact, epoch-ms form (cross-SDK interop)", () => {
+    expect(buildAad("check", null, "2026-08-01T00:00:00Z")).toBe(
+      '{"document_type":"check","valid_from":null,"valid_until":1785542400000}',
+    );
+  });
+});
 
 describe("crypto", () => {
   it("generateKey returns a 32-byte base64 key", () => {
