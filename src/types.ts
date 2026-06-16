@@ -19,6 +19,21 @@ export interface CreateIntentParams {
   splitKey?: boolean;
 }
 
+/** Params for {@link ValidPayClient.createFileIntent} (file mode, Prompt 099). */
+export interface CreateFileIntentParams {
+  documentType: string;
+  /** Raw file bytes to seal (PDF/image/DOCX/…). Encrypted locally. */
+  file: Uint8Array;
+  /** Original filename, stored for issuer records. NOT echoed on public verify. */
+  fileName?: string;
+  /** MIME type, e.g. "application/pdf". Returned on verify for correct download. */
+  fileContentType?: string;
+  validFrom?: string;
+  validUntil?: string;
+  /** Split-key protection (Patent C). Default `true`. */
+  splitKey?: boolean;
+}
+
 export interface BatchIntentItem {
   documentType: string;
   payload: unknown;

@@ -31,18 +31,30 @@ function decodeKey(key: string): Buffer {
   return buf;
 }
 
-export function encrypt(plaintext: string, key: string, aad?: string): string {
+/**
+ * Encrypt raw bytes (file mode — PDF/image/DOCX). {@link encrypt} is the UTF-8
+ * string convenience wrapper. Returns the base64 wire blob.
+ */
+export function encryptBytes(plaintext: Uint8Array, key: string, aad?: string): string {
   const keyBuf = decodeKey(key);
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv(ALGORITHM, keyBuf, iv);
   // M-5: bind metadata as Associated Authenticated Data. Must precede update().
   if (aad) cipher.setAAD(Buffer.from(aad, "utf8"));
-  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return Buffer.concat([iv, authTag, ciphertext]).toString("base64");
 }
 
-export function decrypt(blob: string, key: string, aad?: string): string {
+export function encrypt(plaintext: string, key: string, aad?: string): string {
+  return encryptBytes(Buffer.from(plaintext, "utf8"), key, aad);
+}
+
+/**
+ * Decrypt a ValidPay-format base64 blob to raw bytes (file mode).
+ * {@link decrypt} is the UTF-8 string wrapper.
+ */
+export function decryptBytes(blob: string, key: string, aad?: string): Buffer {
   const keyBuf = decodeKey(key);
 
   let buf: Buffer;
@@ -68,8 +80,7 @@ export function decrypt(blob: string, key: string, aad?: string): string {
   if (aad) decipher.setAAD(Buffer.from(aad, "utf8"));
 
   try {
-    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    return plaintext.toString("utf8");
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   } catch (cause) {
     throw new ValidPayError(
       "decryption_failed",
@@ -77,6 +88,10 @@ export function decrypt(blob: string, key: string, aad?: string): string {
       { cause },
     );
   }
+}
+
+export function decrypt(blob: string, key: string, aad?: string): string {
+  return decryptBytes(blob, key, aad).toString("utf8");
 }
 
 /**

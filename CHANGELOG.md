@@ -4,6 +4,19 @@ All notable changes to `@validpay/node-sdk` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-06-16
+
+### Added
+
+- **File mode — `createFileIntent()`** (Prompt 099). Seal a full document file
+  (PDF, image, DOCX, …) end-to-end: pass the raw bytes (`Uint8Array`/`Buffer`),
+  an optional `fileName` and `fileContentType`, and the SDK AES-256-GCM-encrypts
+  the bytes locally (split-key by default) and registers them with file
+  metadata. A verifier decrypts back the exact original bytes for a
+  byte-for-byte match and the correct download type.
+- Low-level `encryptBytes()` / `decryptBytes()` helpers for raw-bytes payloads
+  (the existing `encrypt()` / `decrypt()` now delegate to them).
+
 ## [0.4.0] — 2026-06-12
 
 ### Changed

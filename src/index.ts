@@ -2,7 +2,9 @@ export { ValidPayClient } from "./client.js";
 export {
   generateKey,
   encrypt,
+  encryptBytes,
   decrypt,
+  decryptBytes,
   commitmentHash,
   splitKey,
   combineKeyShares,
@@ -14,6 +16,7 @@ export {
   ValidPayError,
   type ValidPayClientOptions,
   type CreateIntentParams,
+  type CreateFileIntentParams,
   type BatchIntentItem,
   type SelectiveIntentParams,
   type CreateIntentResult,
