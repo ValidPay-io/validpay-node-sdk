@@ -1,6 +1,7 @@
 import {
   generateKey,
   encrypt,
+  encryptBytes,
   decrypt,
   commitmentHash,
   buildAad,
@@ -14,6 +15,7 @@ import {
   ValidPayError,
   type ValidPayClientOptions,
   type CreateIntentParams,
+  type CreateFileIntentParams,
   type BatchIntentItem,
   type SelectiveIntentParams,
   type CreateIntentResult,
@@ -115,6 +117,72 @@ export class ValidPayClient {
     if (splitKey) {
       body["split_key"] = true;
       body["key_fragment_b"] = shareB;
+    }
+    if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
+    if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;
+
+    const data = await this.request<RawCreateIntentResponse>("POST", "/v1/intent", {
+      body,
+      auth: true,
+    });
+
+    if (!data?.retrieval_id) {
+      throw new ValidPayError("invalid_response", "API response missing retrieval_id", {
+        details: data,
+      });
+    }
+    return { retrievalId: data.retrieval_id, key: resultKey };
+  }
+
+  /**
+   * Seal a full document file (PDF, image, DOCX, …) end-to-end (Prompt 099).
+   *
+   * Unlike {@link createIntent}, which JSON-encodes a structured payload, this
+   * AES-256-GCM-encrypts the raw `file` bytes directly and registers them with
+   * file metadata — so a verifier decrypts back the exact original bytes for a
+   * byte-for-byte match and downloads them with the correct content type.
+   * Split-key protection (Patent C) is on by default.
+   */
+  async createFileIntent(params: CreateFileIntentParams): Promise<CreateIntentResult> {
+    if (!params.documentType) {
+      throw new ValidPayError("invalid_argument", "documentType is required");
+    }
+    if (!(params.file instanceof Uint8Array)) {
+      throw new ValidPayError("invalid_argument", "file must be a Uint8Array/Buffer");
+    }
+    if (params.file.length === 0) {
+      throw new ValidPayError("invalid_argument", "file is empty");
+    }
+    validateTimeLock(params.validFrom, params.validUntil);
+
+    const splitKey = params.splitKey !== false;
+    const fullKey = generateKey();
+    let resultKey = fullKey;
+    let shareB: string | undefined;
+    if (splitKey) {
+      [resultKey, shareB] = splitKeyFn(fullKey);
+    }
+
+    // M-5: bind document_type + validity window as AAD, same as createIntent.
+    const aad = buildAad(params.documentType, params.validFrom, params.validUntil);
+    const encrypted_payload = encryptBytes(params.file, fullKey, aad);
+    // Commitment v2: hash the ciphertext, not the plaintext (C-1).
+    const commitment_hash = commitmentHash(encrypted_payload);
+
+    const body: Record<string, unknown> = {
+      document_type: params.documentType,
+      encrypted_payload,
+      commitment_hash,
+      encryption_version: 2,
+      file_size_bytes: params.file.length,
+    };
+    if (splitKey) {
+      body["split_key"] = true;
+      body["key_fragment_b"] = shareB;
+    }
+    if (params.fileName !== undefined) body["file_name"] = params.fileName;
+    if (params.fileContentType !== undefined) {
+      body["file_content_type"] = params.fileContentType;
     }
     if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
     if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;

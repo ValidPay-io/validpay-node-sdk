@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   generateKey,
   encrypt,
+  encryptBytes,
   decrypt,
+  decryptBytes,
   commitmentHash,
   buildAad,
   splitKey,
@@ -12,6 +14,26 @@ import {
   decryptFields,
 } from "../src/crypto.js";
 import { ValidPayError } from "../src/types.js";
+
+describe("file mode (encryptBytes/decryptBytes)", () => {
+  it("round-trips arbitrary binary bytes exactly", () => {
+    const key = generateKey();
+    const original = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0x01, 0xff, 0xfe, 0x80, 0x90]);
+    const out = decryptBytes(encryptBytes(original, key), key);
+    expect(Buffer.from(out).equals(Buffer.from(original))).toBe(true);
+  });
+
+  it("fails decryptBytes on AAD mismatch", () => {
+    const key = generateKey();
+    const blob = encryptBytes(new Uint8Array([1, 2, 3]), key, "a");
+    expect(() => decryptBytes(blob, key, "b")).toThrow(ValidPayError);
+  });
+
+  it("encrypt() delegates to encryptBytes() (UTF-8 round-trip)", () => {
+    const key = generateKey();
+    expect(decryptBytes(encrypt("héllo ✓", key), key).toString("utf8")).toBe("héllo ✓");
+  });
+});
 
 describe("AAD binding (M-5)", () => {
   it("round-trips with matching AAD", () => {
