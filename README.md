@@ -62,6 +62,62 @@ const verifyUrl = `https://validpay.com/verify/${retrievalId}#key=${toBase64Url(
 
 `toBase64Url` matters because phone QR scanners + browser share-sheets mangle `+`, `/`, and `=` in URL fragments. The `/verify` page accepts both standard base64 and base64url for backward compatibility, but new links should always emit base64url.
 
+### Placing the QR on a document (`embedQr`)
+
+For a PDF, `embedQr` builds the verify QR and stamps it onto the page for you — so you don't have to wire up a QR library, base64url the key, or wrestle with PDF coordinates (PDFs use a bottom-left origin; everything else uses top-left).
+
+`embedQr` needs two **optional** peer dependencies — the core client stays dependency-free, so install them only if you use it:
+
+```bash
+npm i pdf-lib qrcode
+```
+
+```ts
+import { ValidPayClient, embedQr } from "@validpay/node-sdk";
+import { readFile, writeFile } from "node:fs/promises";
+
+const client = new ValidPayClient({ apiKey: process.env.VALIDPAY_API_KEY! });
+
+const original = await readFile("invoice.pdf");
+const { retrievalId, key } = await client.createFileIntent({
+  documentType: "invoice",
+  file: original,
+  fileContentType: "application/pdf",
+});
+
+const sealed = await embedQr(original, {
+  retrievalId,
+  key,
+  // 90pt (1.25in) QR, 36pt in from the bottom-right corner.
+  placement: { anchor: "bottom-right", x: 36, y: 36, width: 90 },
+});
+await writeFile("invoice-sealed.pdf", sealed);
+```
+
+#### The placement contract
+
+Coordinates read the way you think about a page, and are identical to what the **"Try it" placement tool** in the developer console emits — so position once in the UI, copy the call, and it lands in the same spot.
+
+| field    | meaning | default |
+| -------- | ------- | ------- |
+| `anchor` | which page **corner** the insets are measured from (`top-left` \| `top-right` \| `bottom-left` \| `bottom-right`) | `top-left` |
+| `x`      | horizontal inset from that corner's vertical edge | — |
+| `y`      | vertical inset from that corner's horizontal edge | — |
+| `width`  | QR side length (it's square) | — |
+| `units`  | `pt` (1/72in) \| `mm` \| `in` | `pt` |
+| `page`   | 1-based page number | `1` |
+
+`{ anchor: "bottom-right", x: 36, y: 36, width: 90 }` sits 36pt in from the bottom and right edges — and stays bottom-right on any page size. Keep the QR **≥ ~72pt (1in)** so it scans reliably once printed; `embedQr` warns below that and throws if the placement runs off the page.
+
+If you render PDFs with a different library, the two pure helpers are exported too:
+
+```ts
+import { buildVerifyUrl, resolveQrRect } from "@validpay/node-sdk";
+
+const url  = buildVerifyUrl(retrievalId, key);               // base64url key in the fragment
+const rect = resolveQrRect(placement, pageWidthPt, pageHeightPt); // → { x, y, size } in pdf bottom-left points
+```
+
 ## How it works
 
 1. `createIntent` generates a fresh 256-bit key, encrypts your payload locally with AES-256-GCM, computes a SHA-256 commitment hash of the plaintext, and POSTs only the ciphertext + hash to `POST /v1/intent`.
