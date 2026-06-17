@@ -34,3 +34,16 @@ export {
   type WebhookVerifyResult,
   type WebhookVerifyFailureReason,
 } from "./webhookSignature.js";
+export {
+  buildVerifyUrl,
+  resolveQrRect,
+  embedQr,
+  MIN_RECOMMENDED_QR_PT,
+  type QrAnchor,
+  type QrUnit,
+  type QrPlacement,
+  type VerifyUrlOptions,
+  type ResolvedQrRect,
+  type QrRenderOptions,
+  type EmbedQrOptions,
+} from "./pdf.js";

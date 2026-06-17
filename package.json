@@ -1,7 +1,7 @@
 {
   "name": "@validpay/node-sdk",
-  "version": "0.6.0",
-  "description": "Official ValidPay Node.js SDK — client-side AES-256-GCM encryption + commitment hashing + split-key + selective disclosure + revocation. Zero production dependencies.",
+  "version": "0.7.0",
+  "description": "Official ValidPay Node.js SDK — client-side AES-256-GCM encryption + commitment hashing + split-key + selective disclosure + revocation + QR placement. Zero required production dependencies.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -47,8 +47,19 @@
   },
   "license": "MIT",
   "author": "ValidPay",
+  "peerDependencies": {
+    "pdf-lib": ">=1.17.0",
+    "qrcode": ">=1.5.0"
+  },
+  "peerDependenciesMeta": {
+    "pdf-lib": { "optional": true },
+    "qrcode": { "optional": true }
+  },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "@types/qrcode": "^1.5.5",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   }
