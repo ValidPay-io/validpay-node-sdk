@@ -120,6 +120,7 @@ export class ValidPayClient {
     }
     if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
     if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;
+    if (params.onBehalfOf !== undefined) body["on_behalf_of"] = params.onBehalfOf;
 
     const data = await this.request<RawCreateIntentResponse>("POST", "/v1/intent", {
       body,
@@ -186,6 +187,7 @@ export class ValidPayClient {
     }
     if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
     if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;
+    if (params.onBehalfOf !== undefined) body["on_behalf_of"] = params.onBehalfOf;
 
     const data = await this.request<RawCreateIntentResponse>("POST", "/v1/intent", {
       body,
@@ -247,6 +249,7 @@ export class ValidPayClient {
       };
       if (item.validFrom !== undefined) req["valid_from"] = item.validFrom;
       if (item.validUntil !== undefined) req["valid_until"] = item.validUntil;
+      if (item.onBehalfOf !== undefined) req["on_behalf_of"] = item.onBehalfOf;
       requestItems.push(req);
     });
 
@@ -491,6 +494,7 @@ export class ValidPayClient {
     if (key_fragment_b !== undefined) body["key_fragment_b"] = key_fragment_b;
     if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
     if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;
+    if (params.onBehalfOf !== undefined) body["on_behalf_of"] = params.onBehalfOf;
 
     const data = await this.request<RawCreateIntentResponse>("POST", "/v1/intent", {
       body,
@@ -856,6 +860,13 @@ function buildVerifyResult<T>(
     validFrom: data.valid_from ?? null,
     validUntil: data.valid_until ?? null,
     timeLockStatus: computeTimeLockStatus(data.valid_from, data.valid_until),
+    verificationLevel: data.verification_level,
+    delegatedBy: data.delegated_by
+      ? {
+          platform: data.delegated_by.platform,
+          platformLevel: data.delegated_by.platform_level,
+        }
+      : null,
   };
 }
 

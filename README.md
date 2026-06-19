@@ -140,7 +140,7 @@ The key is generated client-side, used client-side, and transmitted client-side.
 
 ### Core
 
-#### `client.createIntent({ documentType, payload, validFrom?, validUntil?, splitKey? }) → { retrievalId, key }`
+#### `client.createIntent({ documentType, payload, validFrom?, validUntil?, splitKey?, onBehalfOf? }) → { retrievalId, key }`
 
 Generates a key, encrypts `JSON.stringify(payload)`, posts ciphertext + commitment hash to `/v1/intent`. Defaults to split-key (Patent C): the returned `key` is Share A and Share B goes to the server — neither alone decrypts. Pass `splitKey: false` for the legacy flow where `key` is the full AES key. **The full key is never sent to the API.**
 
@@ -193,6 +193,34 @@ Backward compatibility: `createIntent({ ..., splitKey: false })` gives the
 legacy single-key flow; `createSplitKeyIntent()` is a deprecated alias of
 `createIntent()` (emits a `DeprecationWarning`); `verifySplitKeyIntent()`
 still works.
+
+### Platform delegation — `onBehalfOf`
+
+If you integrate as a **platform** and seal on behalf of the businesses you
+serve, name the business on each seal. The verifier sees that business as the
+issuer ("who"), attributed *through* your platform ("through whom"), at the
+`delegated` trust rung. The businesses never touch ValidPay — no account, no
+login — and ValidPay stays blind to the document contents.
+
+```ts
+const { retrievalId, key } = await client.createIntent({
+  documentType: "lease",
+  payload: { unit: "4B", term: "12mo" },
+  onBehalfOf: {
+    ref: "landlord_8675309",        // YOUR id for this business (the dedupe key)
+    name: "Smith Properties LLC",   // who the verifier sees
+  },
+});
+
+const result = await client.verifyIntent(retrievalId, key);
+result.issuer;            // "Smith Properties LLC"
+result.verificationLevel; // "delegated"
+result.delegatedBy;       // { platform: "Your Platform", platformLevel: "domain" }
+```
+
+Same `ref` ⇒ same tracked business (its documents and verification counts roll
+up). A sub-issuer surfaces as `delegated` only once **your** platform account is
+domain-verified; until then its documents show as unverified.
 
 ### Selective disclosure (Patent E)
 

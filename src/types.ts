@@ -5,6 +5,22 @@ export interface ValidPayClientOptions {
   fetch?: typeof fetch;
 }
 
+/**
+ * Platform delegation (Fork B). When you integrate as a platform and seal on
+ * behalf of the businesses you serve, declare which business each seal is for.
+ * The verifier sees that business as the issuer ("who"), attributed through your
+ * platform ("through whom"), at the `delegated` trust rung.
+ *
+ * ValidPay stays blind to the document contents — this is identity only.
+ */
+export interface OnBehalfOf {
+  /** Your OWN id for this business. The dedupe key: same `ref` ⇒ same tracked
+   *  sub-issuer (its documents and verification counts roll up). */
+  ref: string;
+  /** The business name shown to verifiers on a scan. */
+  name: string;
+}
+
 export interface CreateIntentParams {
   documentType: string;
   payload: unknown;
@@ -17,6 +33,8 @@ export interface CreateIntentParams {
    * legacy single-key flow where `key` is the full AES key.
    */
   splitKey?: boolean;
+  /** Seal on behalf of one of your businesses (platform delegation). */
+  onBehalfOf?: OnBehalfOf;
 }
 
 /** Params for {@link ValidPayClient.createFileIntent} (file mode, Prompt 099). */
@@ -32,6 +50,8 @@ export interface CreateFileIntentParams {
   validUntil?: string;
   /** Split-key protection (Patent C). Default `true`. */
   splitKey?: boolean;
+  /** Seal on behalf of one of your businesses (platform delegation). */
+  onBehalfOf?: OnBehalfOf;
 }
 
 export interface BatchIntentItem {
@@ -39,6 +59,8 @@ export interface BatchIntentItem {
   payload: unknown;
   validFrom?: string;
   validUntil?: string;
+  /** Seal on behalf of one of your businesses (platform delegation). */
+  onBehalfOf?: OnBehalfOf;
 }
 
 export interface SelectiveIntentParams {
@@ -48,6 +70,8 @@ export interface SelectiveIntentParams {
   splitKey?: boolean;
   validFrom?: string;
   validUntil?: string;
+  /** Seal on behalf of one of your businesses (platform delegation). */
+  onBehalfOf?: OnBehalfOf;
 }
 
 export interface CreateIntentResult {
@@ -68,6 +92,11 @@ export interface VerifyIntentResult<T = unknown> {
   validFrom?: string | null;
   validUntil?: string | null;
   timeLockStatus?: TimeLockStatus | null;
+  /** Graded trust rung of the issuer: none < delegated < domain < business. */
+  verificationLevel?: "none" | "delegated" | "domain" | "business";
+  /** Set when `issuer` was sealed on behalf of, via a platform (delegation).
+   *  Names the vouching platform and its own proven level. */
+  delegatedBy?: { platform: string; platformLevel: "domain" | "business" } | null;
 }
 
 export interface RevocationResult {
@@ -106,6 +135,8 @@ export interface RawIntentResponse {
   split_key?: boolean;
   revocation_reason?: string;
   revoked_at?: string;
+  verification_level?: "none" | "delegated" | "domain" | "business";
+  delegated_by?: { platform: string; platform_level: "domain" | "business" } | null;
 }
 
 export interface RawCreateIntentResponse {
