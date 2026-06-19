@@ -4,6 +4,24 @@ All notable changes to `@validpay/node-sdk` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-06-18
+
+### Added
+
+- **Platform delegation — `onBehalfOf`** (Fork B). Platforms that seal on behalf
+  of the businesses they serve can now declare which business each seal is for:
+  pass `onBehalfOf: { ref, name }` to `createIntent` / `createFileIntent` /
+  `createSelectiveIntent` / `createIntentBatch`. `ref` is your own id for the
+  business (the dedupe key — same `ref` rolls up); `name` is who the verifier
+  sees. The verifier sees that business as the issuer, attributed *through* your
+  platform, at the `delegated` trust rung. ValidPay stays blind to the document
+  contents — this is identity only.
+- `verifyIntent` now surfaces `verificationLevel` (`none` < `delegated` <
+  `domain` < `business`) and `delegatedBy` (`{ platform, platformLevel }`, or
+  `null`) so verifiers can render the graded badge.
+
+> Requires the ValidPay API with platform-delegation support deployed.
+
 ## [0.6.0] — 2026-06-16
 
 ### Added

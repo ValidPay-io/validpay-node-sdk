@@ -157,6 +157,53 @@ describe("ValidPayClient", () => {
     expect(body.valid_until).toBe("2026-12-31T23:59:59Z");
   });
 
+  it("createIntent sends on_behalf_of for platform delegation", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(201, { retrieval_id: "vp_d", status: "active" }),
+    );
+    const client = new ValidPayClient({
+      apiKey: "k",
+      baseUrl: "https://api.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    await client.createIntent({
+      documentType: "lease",
+      payload: { a: 1 },
+      onBehalfOf: { ref: "cust_42", name: "Smith Properties" },
+    });
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body.on_behalf_of).toEqual({ ref: "cust_42", name: "Smith Properties" });
+  });
+
+  it("verifyIntent surfaces verificationLevel + delegatedBy for a delegated issuer", async () => {
+    const key = generateKey();
+    const blob = encrypt(JSON.stringify({ a: 1 }), key);
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        intent_id: "vp_d",
+        encrypted_payload: blob,
+        issuer: "Smith Properties",
+        issuer_verified: false,
+        registered_at: "2026-04-29T12:00:00.000Z",
+        status: "active",
+        verification_level: "delegated",
+        delegated_by: { platform: "Acme Platform", platform_level: "domain" },
+      }),
+    );
+    const client = new ValidPayClient({
+      apiKey: "k",
+      baseUrl: "https://api.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const result = await client.verifyIntent("vp_d", key);
+    expect(result.verificationLevel).toBe("delegated");
+    expect(result.delegatedBy).toEqual({
+      platform: "Acme Platform",
+      platformLevel: "domain",
+    });
+  });
+
   it("createIntent rejects when validFrom >= validUntil", async () => {
     const client = new ValidPayClient({ apiKey: "k" });
     await expect(
@@ -216,6 +263,7 @@ describe("ValidPayClient", () => {
       validFrom: null,
       validUntil: null,
       timeLockStatus: null,
+      delegatedBy: null,
     });
   });
 
