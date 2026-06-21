@@ -7,14 +7,22 @@ import {
   buildAad,
   splitKey as splitKeyFn,
   combineKeyShares,
+  splitKeyPieces,
+  combineKeyPieces,
   encryptFields,
   buildKeyMap,
   decryptFields,
 } from "./crypto.js";
 import {
+  fetchRailPiece,
+  KEYHALVE_RAIL_BASE_URL,
+  KEYHALVE_RAIL_PUBLIC_KEY_SPKI_B64,
+} from "./rail.js";
+import {
   ValidPayError,
   type ValidPayClientOptions,
   type CreateIntentParams,
+  type EndCellIntentParams,
   type CreateFileIntentParams,
   type BatchIntentItem,
   type SelectiveIntentParams,
@@ -64,6 +72,8 @@ export class ValidPayClient {
   private readonly baseUrl: string;
   private readonly timeout: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly railBaseUrl: string;
+  private readonly railPublicKeySpki: string;
 
   constructor(options: ValidPayClientOptions) {
     if (!options.apiKey) {
@@ -73,6 +83,8 @@ export class ValidPayClient {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetch ?? fetch;
+    this.railBaseUrl = options.railBaseUrl ?? KEYHALVE_RAIL_BASE_URL;
+    this.railPublicKeySpki = options.railPublicKeySpki ?? KEYHALVE_RAIL_PUBLIC_KEY_SPKI_B64;
   }
 
   // === Core ===
@@ -133,6 +145,66 @@ export class ValidPayClient {
       });
     }
     return { retrievalId: data.retrieval_id, key: resultKey };
+  }
+
+  /**
+   * Seal a document with End-Cell (CVCP Layer 6B): an n-of-n XOR split across
+   * ShareA (returned as `key`, embed in the QR) + one mandatory piece per holder
+   * (default: the Keyhalve rail + the platform). The full key never exists on any
+   * single party, and no single holder can read or assemble it alone. The returned
+   * `key` is ShareA; `verifyIntent` reconstructs by XOR-ing it with the server pieces.
+   *
+   * Requires the API deployment to have End-Cell issuance enabled.
+   */
+  async createEndCellIntent(params: EndCellIntentParams): Promise<CreateIntentResult> {
+    if (!params.documentType) {
+      throw new ValidPayError("invalid_argument", "documentType is required");
+    }
+    validateTimeLock(params.validFrom, params.validUntil);
+
+    const holders = params.holders ?? ["keyhalve", "platform"];
+    if (holders.length < 1) {
+      throw new ValidPayError("invalid_argument", "holders must contain at least one holder");
+    }
+    if (new Set(holders).size !== holders.length) {
+      throw new ValidPayError("invalid_argument", "holders must be unique");
+    }
+
+    const fullKey = generateKey();
+    // [shareA, piece_1, …, piece_m] — ShareA is the QR key; pieces go to the holders.
+    const parts = splitKeyPieces(fullKey, holders.length);
+    const shareA = parts[0]!;
+    const pieceList = parts.slice(1);
+    const pieces = holders.map((holder, i) => ({ holder, piece: pieceList[i]! }));
+
+    const plaintext = JSON.stringify(params.payload);
+    const aad = buildAad(params.documentType, params.validFrom, params.validUntil);
+    const encrypted_payload = encrypt(plaintext, fullKey, aad);
+    const commitment_hash = commitmentHash(encrypted_payload);
+
+    const body: Record<string, unknown> = {
+      document_type: params.documentType,
+      encrypted_payload,
+      commitment_hash,
+      encryption_version: 2,
+      end_cell: true,
+      pieces,
+    };
+    if (params.validFrom !== undefined) body["valid_from"] = params.validFrom;
+    if (params.validUntil !== undefined) body["valid_until"] = params.validUntil;
+    if (params.onBehalfOf !== undefined) body["on_behalf_of"] = params.onBehalfOf;
+
+    const data = await this.request<RawCreateIntentResponse>("POST", "/v1/intent", {
+      body,
+      auth: true,
+    });
+
+    if (!data?.retrieval_id) {
+      throw new ValidPayError("invalid_response", "API response missing retrieval_id", {
+        details: data,
+      });
+    }
+    return { retrievalId: data.retrieval_id, key: shareA };
   }
 
   /**
@@ -326,7 +398,16 @@ export class ValidPayClient {
     // Share B from the fragment endpoint and XOR-combine, so the natural
     // createIntent -> verifyIntent round trip keeps working.
     let decryptionKey = key;
-    if (data.split_key) {
+    if (data.end_cell) {
+      // Custody separation: platform share(s) come from the ValidPay API; the rail
+      // share comes from the independent KeyHalve rail (signature-verified vs the
+      // pinned key). XOR all of them with ShareA. Fails closed if either is missing.
+      const [platformPieces, railPiece] = await Promise.all([
+        this.fetchPieces(retrievalId),
+        fetchRailPiece(this.fetchImpl, this.railBaseUrl, this.railPublicKeySpki, retrievalId),
+      ]);
+      decryptionKey = combineKeyPieces(key, [...platformPieces, railPiece]);
+    } else if (data.split_key) {
       decryptionKey = combineKeyShares(key, await this.fetchFragmentB(retrievalId));
     }
 
@@ -377,6 +458,32 @@ export class ValidPayClient {
       });
     }
     return frag.fragment_b;
+  }
+
+  /** Fetch the End-Cell server pieces from the public fragment endpoint (Layer 6B).
+   *  Returns the pieces in the server-advertised holder order for XOR-combining. */
+  private async fetchPieces(retrievalId: string): Promise<string[]> {
+    const frag = await this.request<RawFragmentResponse>(
+      "GET",
+      `/v1/intent/${encodeURIComponent(retrievalId)}/fragment`,
+      { auth: false },
+    );
+    if (frag?.error) {
+      throw new ValidPayError(frag.error, `Fragment retrieval failed: ${frag.error}`, {
+        details: frag,
+      });
+    }
+    if (!frag?.pieces || Object.keys(frag.pieces).length === 0) {
+      throw new ValidPayError("missing_fragment", "Server did not return End-Cell pieces", {
+        details: frag,
+      });
+    }
+    const order = frag.holders?.length ? frag.holders : Object.keys(frag.pieces);
+    const pieces = order.map((h) => frag.pieces![h]);
+    if (pieces.some((p) => !p)) {
+      throw new ValidPayError("missing_fragment", "An End-Cell piece was missing", { details: frag });
+    }
+    return pieces as string[];
   }
 
   async verifySplitKeyIntent<T = unknown>(

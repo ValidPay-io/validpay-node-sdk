@@ -9,6 +9,8 @@ import {
   buildAad,
   splitKey,
   combineKeyShares,
+  splitKeyPieces,
+  combineKeyPieces,
   encryptFields,
   buildKeyMap,
   decryptFields,
@@ -191,6 +193,35 @@ describe("splitKey / combineKeyShares", () => {
     expect(() => decrypt(blob, b)).toThrow(ValidPayError);
     const reconstructed = combineKeyShares(a, b);
     expect(decrypt(blob, reconstructed)).toBe("secret payload");
+  });
+});
+
+describe("End-Cell splitKeyPieces / combineKeyPieces (Layer 6B, n-of-n XOR)", () => {
+  it("3-of-3 round-trips: ShareA + rail + platform reconstruct the key", () => {
+    const key = generateKey();
+    const [shareA, rail, platform] = splitKeyPieces(key, 2) as [string, string, string];
+    for (const part of [shareA, rail, platform]) expect(Buffer.from(part, "base64").length).toBe(32);
+    expect(combineKeyPieces(shareA, [rail, platform])).toBe(key);
+  });
+
+  it("every piece is mandatory — a missing or wrong piece yields a wrong key", () => {
+    const key = generateKey();
+    const blob = encrypt("end-cell secret", key);
+    const [shareA, rail, platform] = splitKeyPieces(key, 2) as [string, string, string];
+    // ShareA + only one server piece → wrong key → decrypt fails.
+    expect(() => decrypt(blob, combineKeyPieces(shareA, [rail]))).toThrow(ValidPayError);
+    // Server pieces without ShareA → wrong key → decrypt fails.
+    const noShareA = combineKeyPieces(Buffer.alloc(32).toString("base64"), [rail, platform]);
+    expect(() => decrypt(blob, noShareA)).toThrow(ValidPayError);
+    // All three → decrypts.
+    expect(decrypt(blob, combineKeyPieces(shareA, [rail, platform]))).toBe("end-cell secret");
+  });
+
+  it("supports more than two holders (elective extra pieces)", () => {
+    const key = generateKey();
+    const [shareA, ...pieces] = splitKeyPieces(key, 4) as string[];
+    expect(pieces.length).toBe(4);
+    expect(combineKeyPieces(shareA as string, pieces)).toBe(key);
   });
 });
 

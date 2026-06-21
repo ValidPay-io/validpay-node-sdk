@@ -155,6 +155,41 @@ export function combineKeyShares(shareA: string, shareB: string): string {
   return combined.toString("base64");
 }
 
+/**
+ * End-Cell (CVCP Layer 6B): split a key into ShareA (the QR) plus `pieceCount`
+ * mandatory server-side XOR pieces. `K = ShareA ⊕ piece_1 ⊕ … ⊕ piece_m`, n-of-n —
+ * every piece is required and each alone reveals nothing. Returns
+ * `[shareA, ...pieces]`. With pieceCount=2 this is the default rail + platform split.
+ */
+export function splitKeyPieces(key: string, pieceCount: number): string[] {
+  if (!Number.isInteger(pieceCount) || pieceCount < 1) {
+    throw new Error("splitKeyPieces: pieceCount must be >= 1");
+  }
+  const keyBuf = decodeKey(key);
+  const shareA = randomBytes(KEY_BYTES);
+  const remainder = Buffer.from(keyBuf);
+  for (let i = 0; i < KEY_BYTES; i++) remainder[i]! ^= shareA[i]!; // ShareB = K ⊕ ShareA
+  const pieces: Buffer[] = [];
+  for (let p = 0; p < pieceCount - 1; p++) {
+    const piece = randomBytes(KEY_BYTES);
+    for (let i = 0; i < KEY_BYTES; i++) remainder[i]! ^= piece[i]!;
+    pieces.push(piece);
+  }
+  pieces.push(remainder); // last piece absorbs the remainder so XOR(all) == ShareB
+  return [shareA.toString("base64"), ...pieces.map((b) => b.toString("base64"))];
+}
+
+/** End-Cell: reconstruct the key from ShareA XOR every server-side piece. */
+export function combineKeyPieces(shareA: string, pieces: string[]): string {
+  if (pieces.length < 1) throw new Error("combineKeyPieces: need at least one piece");
+  const combined = Buffer.from(decodeKey(shareA));
+  for (const pieceB64 of pieces) {
+    const piece = decodeKey(pieceB64);
+    for (let i = 0; i < KEY_BYTES; i++) combined[i]! ^= piece[i]!;
+  }
+  return combined.toString("base64");
+}
+
 /** Encrypt each field of payload with its own AES key (Selective Disclosure). */
 export function encryptFields(
   payload: Record<string, unknown>,
