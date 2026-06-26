@@ -3,6 +3,10 @@ export interface ValidPayClientOptions {
   baseUrl?: string;
   timeout?: number;
   fetch?: typeof fetch;
+  /** KeyHalve rail base URL (End-Cell verify). Defaults to https://rail.keyhalve.com. */
+  railBaseUrl?: string;
+  /** Pinned rail Ed25519 public key (SPKI DER, base64). Defaults to the live rail key. */
+  railPublicKeySpki?: string;
 }
 
 /**
@@ -33,6 +37,27 @@ export interface CreateIntentParams {
    * legacy single-key flow where `key` is the full AES key.
    */
   splitKey?: boolean;
+  /** Seal on behalf of one of your businesses (platform delegation). */
+  onBehalfOf?: OnBehalfOf;
+}
+
+/**
+ * Params for {@link ValidPayClient.createEndCellIntent} (End-Cell, CVCP Layer 6B).
+ * Generalises split-key to an n-of-n XOR across ShareA (returned as `key`, embed in
+ * the QR) + one mandatory piece per server-side holder. The full key never exists on
+ * any single party.
+ */
+export interface EndCellIntentParams {
+  documentType: string;
+  payload: unknown;
+  validFrom?: string;
+  validUntil?: string;
+  /**
+   * Server-side holders, one mandatory XOR piece each. Defaults to
+   * `["keyhalve", "platform"]` (the blind rail + the platform) → a 3-of-3 split with
+   * the receiver's ShareA. Provide more to elect additional independent holders.
+   */
+  holders?: string[];
   /** Seal on behalf of one of your businesses (platform delegation). */
   onBehalfOf?: OnBehalfOf;
 }
@@ -133,6 +158,8 @@ export interface RawIntentResponse {
   selective_disclosure?: boolean;
   encrypted_key_map?: string;
   split_key?: boolean;
+  /** End-Cell (CVCP Layer 6B): key split n-of-n XOR across ShareA + server pieces. */
+  end_cell?: boolean;
   revocation_reason?: string;
   revoked_at?: string;
   verification_level?: "none" | "delegated" | "domain" | "business";
@@ -210,6 +237,10 @@ export interface RawListIntentsResponse {
 
 export interface RawFragmentResponse {
   fragment_b?: string;
+  /** End-Cell (CVCP Layer 6B): the per-holder server pieces. */
+  end_cell?: boolean;
+  holders?: string[];
+  pieces?: Record<string, string>;
   error?: string;
 }
 

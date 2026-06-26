@@ -10,7 +10,7 @@ const H = 792;
 describe("buildVerifyUrl", () => {
   it("builds the canonical /verify URL with the key in the fragment", () => {
     expect(buildVerifyUrl("abc123", "deadbeef")).toBe(
-      "https://validpay.com/verify/abc123#key=deadbeef",
+      "https://verify.keyhalve.com/verify/abc123#key=deadbeef",
     );
   });
 
@@ -23,7 +23,7 @@ describe("buildVerifyUrl", () => {
   it("url-encodes the retrieval id and base64url-encodes the fragment key", () => {
     // key "K+K/m==" → base64url "K-K_m"; retrieval id is percent-encoded.
     expect(buildVerifyUrl("a/b c", "K+K/m==")).toBe(
-      "https://validpay.com/verify/a%2Fb%20c#key=K-K_m",
+      "https://verify.keyhalve.com/verify/a%2Fb%20c#key=K-K_m",
     );
   });
 
