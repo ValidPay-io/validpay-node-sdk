@@ -72,7 +72,7 @@ export const MIN_RECOMMENDED_QR_PT = 72;
 // ── Verify URL ──────────────────────────────────────────────────────────────
 
 export interface VerifyUrlOptions {
-  /** Web origin that serves `/verify`. Default `"https://validpay.com"`. */
+  /** Web origin that serves `/verify`. Default `"https://verify.keyhalve.com"`. */
   baseUrl?: string;
 }
 
@@ -104,7 +104,7 @@ export function buildVerifyUrl(
   if (!key) {
     throw new ValidPayError("invalid_argument", "key is required");
   }
-  const base = (opts.baseUrl ?? "https://validpay.com").replace(/\/+$/, "");
+  const base = (opts.baseUrl ?? "https://verify.keyhalve.com").replace(/\/+$/, "");
   return `${base}/verify/${encodeURIComponent(retrievalId)}#key=${toBase64Url(key)}`;
 }
 
@@ -178,7 +178,7 @@ export interface EmbedQrOptions {
   key: string;
   /** Where to stamp the QR. */
   placement: QrPlacement;
-  /** Verify URL base. Default `"https://validpay.com"`. */
+  /** Verify URL base. Default `"https://verify.keyhalve.com"`. */
   baseUrl?: string;
   /** QR rendering tweaks. */
   qr?: QrRenderOptions;
