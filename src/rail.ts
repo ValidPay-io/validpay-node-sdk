@@ -18,9 +18,21 @@ export const KEYHALVE_RAIL_PUBLIC_KEY_SPKI_B64 =
 
 const HOLDER = "keyhalve";
 
+/** sig_v 1 canonical payload — custody only. Unchanged forever (back-compat). */
 function canonicalMessage(intentId: string, piece: string): string {
   return `keyhalve-rail.v1\n${intentId}\n${HOLDER}\n${piece}`;
 }
+
+/** sig_v 2 canonical payload — M2 content binding. The rail additionally signs the
+ *  document's ciphertext commitment (sha256 hex of the base64 ciphertext, the same
+ *  value as the intent's commitment hash), binding "Authentic" to the content rather
+ *  than key custody alone. Byte-exact construction (UTF-8, "\n" separators):
+ *  `keyhalve-rail.v2\n<intentId>\nkeyhalve\n<piece>\n<commitment>` */
+function canonicalMessageV2(intentId: string, piece: string, commitment: string): string {
+  return `keyhalve-rail.v2\n${intentId}\n${HOLDER}\n${piece}\n${commitment}`;
+}
+
+const COMMITMENT_HEX_RE = /^[0-9a-f]{64}$/;
 
 interface RailPieceResponse {
   holder?: string;
@@ -28,17 +40,29 @@ interface RailPieceResponse {
   sig?: string;
   alg?: string;
   error?: string;
+  /** M2: present on sig_v 2 responses — the ciphertext commitment the signature covers. */
+  commitment?: string;
+  /** Signature payload version: 1 (custody-only, default for old pieces) or 2 (content-bound). */
+  sig_v?: number;
 }
 
 /**
  * Fetch and verify `B_keyhalve` for an intent. Throws (fails closed) on unreachable,
  * missing, revoked, malformed, or bad-signature.
+ *
+ * M2 content binding: sig_v 2 responses are verified over the v2 payload (which covers
+ * the rail-sealed ciphertext commitment). When `expectedCommitmentHex` is supplied
+ * (the sha256 the caller computed over the ciphertext it actually received), a sig_v 2
+ * commitment that does not match it fails closed — the rail share is never released
+ * for content other than what was sealed. sig_v 1 responses keep verifying exactly as
+ * before; existing pieces are unaffected.
  */
 export async function fetchRailPiece(
   fetchImpl: typeof fetch,
   railBaseUrl: string,
   pinnedSpkiB64: string,
   intentId: string,
+  expectedCommitmentHex?: string,
 ): Promise<string> {
   const base = railBaseUrl.replace(/\/+$/, "");
   let res: Response;
@@ -61,19 +85,39 @@ export async function fetchRailPiece(
     throw new ValidPayError("rail_malformed", "Malformed rail response");
   }
 
+  // Absent sig_v = a pre-M2 (v1) piece. Anything other than 1 or 2 fails closed.
+  const sigV = json.sig_v ?? 1;
+  let message: string;
+  if (sigV === 2) {
+    if (typeof json.commitment !== "string" || !COMMITMENT_HEX_RE.test(json.commitment)) {
+      throw new ValidPayError("rail_malformed", "Malformed rail response: sig_v 2 without a valid commitment");
+    }
+    message = canonicalMessageV2(intentId, json.piece, json.commitment);
+  } else if (sigV === 1) {
+    message = canonicalMessage(intentId, json.piece);
+  } else {
+    throw new ValidPayError("rail_malformed", `Unsupported rail signature version: ${String(json.sig_v)}`);
+  }
+
   const pub = createPublicKey({
     key: Buffer.from(pinnedSpkiB64, "base64"),
     format: "der",
     type: "spki",
   });
-  const ok = verify(
-    null,
-    Buffer.from(canonicalMessage(intentId, json.piece), "utf8"),
-    pub,
-    Buffer.from(json.sig, "base64"),
-  );
+  const ok = verify(null, Buffer.from(message, "utf8"), pub, Buffer.from(json.sig, "base64"));
   if (!ok) {
     throw new ValidPayError("rail_bad_signature", "Rail response failed signature verification");
   }
+
+  // M2 binding check: the (signature-covered) rail commitment must equal the
+  // commitment the caller computed locally over the ciphertext it received.
+  if (sigV === 2 && expectedCommitmentHex !== undefined && json.commitment !== expectedCommitmentHex) {
+    throw new ValidPayError(
+      "rail_commitment_mismatch",
+      "Rail commitment does not match the ciphertext — the rail attestation is bound to different content",
+      { details: { rail_commitment: json.commitment, computed_commitment: expectedCommitmentHex } },
+    );
+  }
+
   return json.piece;
 }
