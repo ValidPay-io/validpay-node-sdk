@@ -402,9 +402,18 @@ export class ValidPayClient {
       // Custody separation: platform share(s) come from the ValidPay API; the rail
       // share comes from the independent KeyHalve rail (signature-verified vs the
       // pinned key). XOR all of them with ShareA. Fails closed if either is missing.
+      // M2 content binding: pass the commitment computed over the ciphertext we
+      // actually received — a sig_v 2 rail attestation bound to different content
+      // then fails closed instead of releasing the share.
       const [platformPieces, railPiece] = await Promise.all([
         this.fetchPieces(retrievalId),
-        fetchRailPiece(this.fetchImpl, this.railBaseUrl, this.railPublicKeySpki, retrievalId),
+        fetchRailPiece(
+          this.fetchImpl,
+          this.railBaseUrl,
+          this.railPublicKeySpki,
+          retrievalId,
+          commitmentHash(data.encrypted_payload),
+        ),
       ]);
       decryptionKey = combineKeyPieces(key, [...platformPieces, railPiece]);
     } else if (data.split_key) {
