@@ -73,39 +73,76 @@ describe("fetchRailPiece", () => {
 
 // ── M2 content binding (sig_v 2): the rail signature also covers the ciphertext
 //    commitment; the SDK verifies the v2 payload and enforces commitment equality. ──
-describe("fetchRailPiece — sig_v 2 (M2 content binding)", () => {
+describe("fetchRailPiece — M2 content binding (dual signing, sig_v 2)", () => {
+  // A faithful dual-signed rail response: `sig` is the v1 (custody) signature —
+  // exactly as for uncommitted pieces — and `commitment_sig` is the SECOND
+  // signature over the v2 (content-bound) payload.
   const v2body = (privateKey: KeyObject, over: Record<string, unknown> = {}) => ({
     holder: "keyhalve",
     piece: PIECE,
-    commitment: COMMITMENT,
-    sig_v: 2,
-    sig: sigV2(privateKey, INTENT, PIECE, COMMITMENT),
+    sig: sig(privateKey, INTENT, PIECE),
     alg: "ed25519",
-    canonical: "keyhalve-rail.v2",
+    canonical: "keyhalve-rail.v1",
+    commitment: COMMITMENT,
+    commitment_sig: sigV2(privateKey, INTENT, PIECE, COMMITMENT),
+    sig_v: 2,
     ...over,
   });
 
-  it("verifies a sig_v 2 response and enforces the expected commitment", async () => {
+  it("verifies a dual-signed response and enforces the expected commitment", async () => {
     const { privateKey, spkiB64 } = makeKey();
     const f = vi.fn().mockResolvedValue(resp(v2body(privateKey)));
     await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, COMMITMENT)).resolves.toBe(PIECE);
   });
 
-  it("verifies a sig_v 2 response when the caller passes no expected commitment", async () => {
+  it("verifies a dual-signed response when the caller passes no expected commitment", async () => {
     const { privateKey, spkiB64 } = makeKey();
     const f = vi.fn().mockResolvedValue(resp(v2body(privateKey)));
     await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT)).resolves.toBe(PIECE);
   });
 
+  // ── THE critical compat vector: on a committed piece, `sig` MUST still be the v1
+  //    signature. A rail that switched `sig` to the v2 payload (the rejected design)
+  //    would break this SDK and every already-published verifier. ──
+  it("fails closed if `sig` is the v2-payload signature instead of v1 (sig must never switch)", async () => {
+    const { privateKey, spkiB64 } = makeKey();
+    const f = vi.fn().mockResolvedValue(
+      resp(v2body(privateKey, { sig: sigV2(privateKey, INTENT, PIECE, COMMITMENT) })),
+    );
+    await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, COMMITMENT)).rejects.toThrow(/signature/i);
+  });
+
   it("fails closed when the rail commitment does not match the locally computed one", async () => {
     const { privateKey, spkiB64 } = makeKey();
-    // Correctly signed by the rail — but bound to DIFFERENT content than we hold.
+    // Correctly dual-signed by the rail — but bound to DIFFERENT content than we hold.
     const f = vi.fn().mockResolvedValue(resp(v2body(privateKey)));
     const other = "f".repeat(64);
     await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, other)).rejects.toThrow(/commitment/i);
   });
 
-  it("fails closed on sig_v 2 with a missing or malformed commitment", async () => {
+  it("fails closed on a tampered or wrong-payload commitment_sig", async () => {
+    const { privateKey, spkiB64 } = makeKey();
+    // Bit-flipped commitment_sig.
+    const flipped = Buffer.from(sigV2(privateKey, INTENT, PIECE, COMMITMENT), "base64");
+    flipped[0] ^= 0xff;
+    const tampered = vi.fn().mockResolvedValue(
+      resp(v2body(privateKey, { commitment_sig: flipped.toString("base64") })),
+    );
+    await expect(fetchRailPiece(tampered, "https://rail.test", spkiB64, INTENT, COMMITMENT)).rejects.toThrow(/commitment/i);
+    // commitment_sig that is (only) the v1 signature — wrong payload.
+    const wrongPayload = vi.fn().mockResolvedValue(
+      resp(v2body(privateKey, { commitment_sig: sig(privateKey, INTENT, PIECE) })),
+    );
+    await expect(fetchRailPiece(wrongPayload, "https://rail.test", spkiB64, INTENT, COMMITMENT)).rejects.toThrow(/commitment/i);
+    // commitment_sig signed by a non-pinned key.
+    const attacker = makeKey();
+    const wrongKey = vi.fn().mockResolvedValue(
+      resp(v2body(privateKey, { commitment_sig: sigV2(attacker.privateKey, INTENT, PIECE, COMMITMENT) })),
+    );
+    await expect(fetchRailPiece(wrongKey, "https://rail.test", spkiB64, INTENT, COMMITMENT)).rejects.toThrow(/commitment/i);
+  });
+
+  it("fails closed on an advertised binding with a missing or malformed commitment", async () => {
     const { privateKey, spkiB64 } = makeKey();
     for (const commitment of [undefined, "", COMMITMENT.toUpperCase(), COMMITMENT.slice(0, 63), 42]) {
       const f = vi.fn().mockResolvedValue(resp(v2body(privateKey, { commitment })));
@@ -113,19 +150,22 @@ describe("fetchRailPiece — sig_v 2 (M2 content binding)", () => {
     }
   });
 
-  it("fails closed when sig_v 2 is claimed over a v1-signed payload (version binding)", async () => {
+  it("fails closed on an advertised binding with a missing commitment_sig (stripping)", async () => {
     const { privateKey, spkiB64 } = makeKey();
-    // Signature is over the v1 payload; claiming sig_v 2 must not verify.
-    const f = vi.fn().mockResolvedValue(resp(v2body(privateKey, { sig: sig(privateKey, INTENT, PIECE) })));
-    await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, COMMITMENT)).rejects.toThrow(/signature/i);
+    for (const commitment_sig of [undefined, ""]) {
+      const f = vi.fn().mockResolvedValue(resp(v2body(privateKey, { commitment_sig })));
+      await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, COMMITMENT)).rejects.toThrow(/malformed/i);
+    }
   });
 
-  it("fails closed when a v2 signature is presented as sig_v 1 (downgrade)", async () => {
+  it("enforces the binding even when sig_v is absent but commitment fields are present", async () => {
     const { privateKey, spkiB64 } = makeKey();
-    const f = vi.fn().mockResolvedValue(
-      resp({ holder: "keyhalve", piece: PIECE, sig: sigV2(privateKey, INTENT, PIECE, COMMITMENT), sig_v: 1 }),
-    );
-    await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, COMMITMENT)).rejects.toThrow(/signature/i);
+    // A well-formed binding without sig_v still verifies…
+    const good = vi.fn().mockResolvedValue(resp(v2body(privateKey, { sig_v: undefined })));
+    await expect(fetchRailPiece(good, "https://rail.test", spkiB64, INTENT, COMMITMENT)).resolves.toBe(PIECE);
+    // …and a mismatching one still fails closed (presence of the fields claims it).
+    const bad = vi.fn().mockResolvedValue(resp(v2body(privateKey, { sig_v: undefined })));
+    await expect(fetchRailPiece(bad, "https://rail.test", spkiB64, INTENT, "f".repeat(64))).rejects.toThrow(/commitment/i);
   });
 
   it("rejects an unsupported signature version", async () => {
