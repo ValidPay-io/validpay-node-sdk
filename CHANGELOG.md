@@ -4,6 +4,31 @@ All notable changes to `@validpay/node-sdk` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-07-02
+
+### Added
+
+- **End-Cell issuance — `createEndCellIntent()`** (recommended). KeyHalve's
+  blind-rail flow: encrypts the payload locally and XOR-splits the AES key into
+  **ShareA** (returned as `key`, rides the QR) plus one share per holder
+  (`holders` defaults to `["keyhalve", "platform"]` → a 3-of-3 split). No
+  single party — not the platform, not KeyHalve — can read or reassemble the
+  key. Requires the API deployment to have End-Cell issuance enabled.
+- **Rail verify.** `verifyIntent` now detects End-Cell intents and fetches the
+  independent KeyHalve rail share alongside the platform share, verifying the
+  rail's Ed25519 signature against a **pinned** key (fail-closed) before
+  recombining in memory and decrypting. One `verifyIntent` call handles all
+  share models.
+
+### Changed
+
+- **Canonical verify origin is now `https://verify.keyhalve.com`.**
+  `buildVerifyUrl` (and `embedQr`) emit verify links on the canonical
+  KeyHalve verifier origin by default.
+- README leads with End-Cell (recommended) — quick start, feature list, and
+  "How it works" document the 3-share blind-rail flow first; split-key stays
+  the `createIntent` default (2-share).
+
 ## [0.8.0] — 2026-06-18
 
 ### Added
