@@ -2,6 +2,7 @@
 
 Official Node.js SDK for [ValidPay](https://validpay.com) — document verification API with **client-side AES-256-GCM encryption**. Sensitive payloads are encrypted on your server before they ever leave the box; ValidPay stores the ciphertext, and only your verifier (with the key you hand them) can read the contents.
 
+- **End-Cell issuance (blind rail)** — 3-of-3 XOR key split across the QR, the platform, and the independent KeyHalve rail; no single party can read or reassemble the key
 - **Zero production dependencies** — Node.js built-in `crypto` + native `fetch` only
 - **AES-256-GCM** authenticated encryption (tampering is detected on decrypt)
 - **Hybrid commitment scheme** — SHA-256 commitment hash detects server-side tampering
@@ -50,10 +51,10 @@ console.log(result.issuer);              // "Acme Bank"
 console.log(result.issuerVerified);      // true
 ```
 
-> **Simpler 2-share option:** `createSplitKeyIntent()` splits the key between the
-> document and the platform only — no independent rail share, so the platform
-> alone could reconstruct. `createIntent()` also defaults to split-key. Prefer
-> **End-Cell** above when independence from the platform matters.
+> **Simpler 2-share option:** `createIntent()` defaults to split-key — the key is
+> split between the document and the platform only, with no independent rail
+> share, so the platform alone could reconstruct. Prefer **End-Cell** above when
+> independence from the platform matters.
 
 ### Building a verification URL
 
@@ -129,6 +130,13 @@ const rect = resolveQrRect(placement, pageWidthPt, pageHeightPt); // → { x, y,
 
 ## How it works
 
+**End-Cell (recommended, 3-share):**
+
+1. `createEndCellIntent` generates a fresh 256-bit key, encrypts your payload locally with AES-256-GCM, computes a SHA-256 commitment hash of the plaintext, and XOR-splits the key three ways: **ShareA** (returned to you, rides the QR), one share held by the platform, and one share held by the independent **KeyHalve rail**. Only ciphertext + commitment hash + the two escrowed shares leave your box — never the full key.
+2. The verifier calls `verifyIntent`, which fetches the platform share and the rail share (the rail's Ed25519 signature is verified against a pinned key, fail-closed), recombines all three shares in memory, decrypts locally, and re-checks the commitment hash. **The full key never exists on any single system.**
+
+**Split-key (2-share, the `createIntent` default):**
+
 1. `createIntent` generates a fresh 256-bit key, encrypts your payload locally with AES-256-GCM, computes a SHA-256 commitment hash of the plaintext, and POSTs only the ciphertext + hash to `POST /v1/intent`.
 2. The API returns a public `retrieval_id` and stores the ciphertext + commitment hash.
 3. You hand the verifier the `retrievalId` and the `key` through your own secure channel.
@@ -195,7 +203,7 @@ interface VerifyIntentResult<T> {
 }
 ```
 
-### Split-key (Patent C) — the default
+### Split-key (Patent C) — the `createIntent` default (2-share)
 
 All documents created with SDK v0.4+ use split-key by default — `createIntent`
 returns Share A and stores Share B at the API; `verifyIntent` detects a
