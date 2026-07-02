@@ -2,6 +2,7 @@
 
 Official Node.js SDK for [ValidPay](https://validpay.com) — document verification API with **client-side AES-256-GCM encryption**. Sensitive payloads are encrypted on your server before they ever leave the box; ValidPay stores the ciphertext, and only your verifier (with the key you hand them) can read the contents.
 
+- **End-Cell issuance (blind rail)** — 3-of-3 XOR key split across the QR, the platform, and the independent KeyHalve rail; no single party can read or reassemble the key
 - **Zero production dependencies** — Node.js built-in `crypto` + native `fetch` only
 - **AES-256-GCM** authenticated encryption (tampering is detected on decrypt)
 - **Hybrid commitment scheme** — SHA-256 commitment hash detects server-side tampering
@@ -25,19 +26,23 @@ import { ValidPayClient } from "@validpay/node-sdk";
 
 const client = new ValidPayClient({ apiKey: process.env.VALIDPAY_API_KEY! });
 
-// 1. Issuer side — register an intent with sensitive payload.
-// Split-key protection (Patent C) is the default since 0.4.0: `key` is
-// Share A of the AES key; Share B is stored on the ValidPay server. The
-// full decryption key never exists on any single system.
-const { retrievalId, key } = await client.createIntent({
+// 1. Issuer side — seal with End-Cell (recommended). The AES key is split
+//    THREE ways: `key` is ShareA (rides the QR); one share goes to the
+//    platform; one goes to the independent KeyHalve rail. No single party —
+//    not the platform, not KeyHalve — can read or reassemble the key.
+const { retrievalId, key } = await client.createEndCellIntent({
   documentType: "ssn_card",
   payload: { ssn: "123-45-6789", name: "Jane Doe" },
+  // holders defaults to ["keyhalve", "platform"] → a 3-of-3 split with ShareA
 });
 
 // retrievalId is public (e.g. "vp_abc123def456") — embed in a QR code.
-// key (Share A) is secret — deliver it ONLY to the intended verifier, out-of-band.
+// key (ShareA) is secret — deliver it ONLY to the intended verifier, out-of-band.
 
-// 2. Verifier side — fetch and decrypt (no API key needed)
+// 2. Verifier side — fetch and decrypt (no API key needed). verifyIntent
+//    fetches the platform share + the rail share (the rail's Ed25519 signature
+//    is verified against a PINNED key, fail-closed), recombines in memory,
+//    decrypts locally, and re-checks the commitment hash.
 const result = await client.verifyIntent<{ ssn: string; name: string }>(retrievalId, key);
 
 console.log(result.payload);             // { ssn: "123-45-6789", name: "Jane Doe" }
@@ -45,6 +50,11 @@ console.log(result.integrityVerified);   // true — commitment hash matched
 console.log(result.issuer);              // "Acme Bank"
 console.log(result.issuerVerified);      // true
 ```
+
+> **Simpler 2-share option:** `createIntent()` defaults to split-key — the key is
+> split between the document and the platform only, with no independent rail
+> share, so the platform alone could reconstruct. Prefer **End-Cell** above when
+> independence from the platform matters.
 
 ### Building a verification URL
 
@@ -55,7 +65,7 @@ function toBase64Url(b64: string): string {
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-const verifyUrl = `https://validpay.com/verify/${retrievalId}#key=${toBase64Url(key)}`;
+const verifyUrl = `https://verify.keyhalve.com/verify/${retrievalId}#key=${toBase64Url(key)}`;
 // → encode in a QR, paste in an email, scan with a phone camera.
 // The /verify page reads the fragment client-side and decrypts locally.
 ```
@@ -120,6 +130,13 @@ const rect = resolveQrRect(placement, pageWidthPt, pageHeightPt); // → { x, y,
 
 ## How it works
 
+**End-Cell (recommended, 3-share):**
+
+1. `createEndCellIntent` generates a fresh 256-bit key, encrypts your payload locally with AES-256-GCM, computes a SHA-256 commitment hash of the plaintext, and XOR-splits the key three ways: **ShareA** (returned to you, rides the QR), one share held by the platform, and one share held by the independent **KeyHalve rail**. Only ciphertext + commitment hash + the two escrowed shares leave your box — never the full key.
+2. The verifier calls `verifyIntent`, which fetches the platform share and the rail share (the rail's Ed25519 signature is verified against a pinned key, fail-closed), recombines all three shares in memory, decrypts locally, and re-checks the commitment hash. **The full key never exists on any single system.**
+
+**Split-key (2-share, the `createIntent` default):**
+
 1. `createIntent` generates a fresh 256-bit key, encrypts your payload locally with AES-256-GCM, computes a SHA-256 commitment hash of the plaintext, and POSTs only the ciphertext + hash to `POST /v1/intent`.
 2. The API returns a public `retrieval_id` and stores the ciphertext + commitment hash.
 3. You hand the verifier the `retrievalId` and the `key` through your own secure channel.
@@ -138,11 +155,25 @@ The key is generated client-side, used client-side, and transmitted client-side.
 | `timeout` | `number`            | `30000`                     | Request timeout (ms).                       |
 | `fetch`   | `typeof fetch`      | global `fetch`              | Inject a custom fetch (useful for testing). |
 
+### End-Cell (recommended)
+
+#### `client.createEndCellIntent({ documentType, payload, holders?, validFrom?, validUntil?, onBehalfOf? }) → { retrievalId, key }`
+
+KeyHalve's blind-rail flow. Generates a key, encrypts `JSON.stringify(payload)`, and XOR-splits the key into **ShareA** (returned as `key`, for the QR) plus one share per holder. `holders` defaults to `["keyhalve", "platform"]` → a **3-of-3** split: the independent KeyHalve rail share + the platform share + ShareA. No single party can read or reassemble the key. Verify with `verifyIntent` (below), which fetches the platform + rail shares, verifies the rail's Ed25519 signature against a **pinned** key (fail-closed), recombines in memory, and decrypts. **The full key never exists on any single system.** Requires the API deployment to have End-Cell issuance enabled.
+
+```ts
+const { retrievalId, key } = await client.createEndCellIntent({
+  documentType: "ssn_card",
+  payload: { ssn: "123-45-6789" },
+});
+const result = await client.verifyIntent(retrievalId, key); // one call handles all share models
+```
+
 ### Core
 
 #### `client.createIntent({ documentType, payload, validFrom?, validUntil?, splitKey?, onBehalfOf? }) → { retrievalId, key }`
 
-Generates a key, encrypts `JSON.stringify(payload)`, posts ciphertext + commitment hash to `/v1/intent`. Defaults to split-key (Patent C): the returned `key` is Share A and Share B goes to the server — neither alone decrypts. Pass `splitKey: false` for the legacy flow where `key` is the full AES key. **The full key is never sent to the API.**
+Generates a key, encrypts `JSON.stringify(payload)`, posts ciphertext + commitment hash to `/v1/intent`. Defaults to **split-key** (2-share): the returned `key` is Share A and Share B goes to the platform — neither alone decrypts, but there is **no independent rail share** (the platform alone could reconstruct). For independence from the platform, prefer **`createEndCellIntent`** above. Pass `splitKey: false` for the legacy single-key flow. **The full key is never sent to the API.**
 
 #### `client.createIntentBatch(items[]) → { retrievalId, key }[]`
 
@@ -172,7 +203,7 @@ interface VerifyIntentResult<T> {
 }
 ```
 
-### Split-key (Patent C) — the default
+### Split-key (Patent C) — the `createIntent` default (2-share)
 
 All documents created with SDK v0.4+ use split-key by default — `createIntent`
 returns Share A and stores Share B at the API; `verifyIntent` detects a
