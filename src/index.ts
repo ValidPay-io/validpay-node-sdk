@@ -23,6 +23,7 @@ export {
   type BatchIntentItem,
   type SelectiveIntentParams,
   type CreateIntentResult,
+  type VerifyIntentOptions,
   type VerifyIntentResult,
   type TimeLockStatus,
   type RevocationResult,
@@ -30,6 +31,7 @@ export {
   type RawIntentResponse,
   type RawCreateIntentResponse,
 } from "./types.js";
+export { QR_MAC_RE } from "./rail.js";
 export {
   verifyWebhookSignature,
   DEFAULT_WEBHOOK_TOLERANCE_SECONDS,

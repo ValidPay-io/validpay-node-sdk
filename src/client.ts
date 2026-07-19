@@ -17,6 +17,7 @@ import {
   fetchRailPiece,
   KEYHALVE_RAIL_BASE_URL,
   KEYHALVE_RAIL_PUBLIC_KEY_SPKI_B64,
+  QR_MAC_RE,
 } from "./rail.js";
 import {
   ValidPayError,
@@ -27,6 +28,7 @@ import {
   type BatchIntentItem,
   type SelectiveIntentParams,
   type CreateIntentResult,
+  type VerifyIntentOptions,
   type VerifyIntentResult,
   type TimeLockStatus,
   type RevocationResult,
@@ -348,15 +350,29 @@ export class ValidPayClient {
     });
   }
 
+  /**
+   * Verify a sealed document. For End-Cell intents whose verify URL carries the
+   * anti-fake QR MAC (`?m=`, mandatory for documents sealed since QR-MAC
+   * enforcement), pass it as `options.qrMac` — it is forwarded to the KeyHalve
+   * rail, which releases the rail share only for the exact QR that was issued.
+   */
   async verifyIntent<T = unknown>(
     retrievalId: string,
     key: string,
+    options?: VerifyIntentOptions,
   ): Promise<VerifyIntentResult<T>> {
     if (!retrievalId) {
       throw new ValidPayError("invalid_argument", "retrievalId is required");
     }
     if (!key) {
       throw new ValidPayError("invalid_argument", "key is required");
+    }
+    const qrMac = options?.qrMac;
+    if (qrMac !== undefined && !QR_MAC_RE.test(qrMac)) {
+      throw new ValidPayError(
+        "invalid_argument",
+        "qrMac must be the `?m=` value from the verify URL (8–16 chars of [A-Za-z0-9_-])",
+      );
     }
 
     const data = await this.request<RawIntentResponse>(
@@ -405,6 +421,9 @@ export class ValidPayClient {
       // M2 content binding: pass the commitment computed over the ciphertext we
       // actually received — a sig_v 2 rail attestation bound to different content
       // then fails closed instead of releasing the share.
+      // Anti-fake QR MAC: forward the verify URL's `m` (qrMac) — MAC-gated
+      // documents 403 without it, and that verdict must surface as a MAC error,
+      // never as "rail down".
       const [platformPieces, railPiece] = await Promise.all([
         this.fetchPieces(retrievalId),
         fetchRailPiece(
@@ -413,6 +432,7 @@ export class ValidPayClient {
           this.railPublicKeySpki,
           retrievalId,
           commitmentHash(data.encrypted_payload),
+          qrMac,
         ),
       ]);
       decryptionKey = combineKeyPieces(key, [...platformPieces, railPiece]);

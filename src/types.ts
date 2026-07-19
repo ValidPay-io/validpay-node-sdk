@@ -104,6 +104,20 @@ export interface CreateIntentResult {
   key: string;
 }
 
+/** Options for {@link ValidPayClient.verifyIntent}. */
+export interface VerifyIntentOptions {
+  /**
+   * Anti-fake QR MAC — the `?m=` query value from the document's verify URL
+   * (shape `/^[A-Za-z0-9_-]{8,16}$/`). Documents sealed since QR-MAC
+   * enforcement REQUIRE it: the KeyHalve rail releases their End-Cell share
+   * only for the exact QR/URL that was issued. Callers that parse a verify
+   * URL must extract `m` alongside the id and `#key=` fragment and pass it
+   * here. Rejection is surfaced as `qr_mac_invalid` (treat as fraudulent);
+   * omission on a MAC-gated document as `qr_mac_required`.
+   */
+  qrMac?: string;
+}
+
 export type TimeLockStatus = "valid" | "not_yet_valid" | "expired";
 
 export interface VerifyIntentResult<T = unknown> {

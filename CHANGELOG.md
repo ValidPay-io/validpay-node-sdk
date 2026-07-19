@@ -4,6 +4,30 @@ All notable changes to `@validpay/node-sdk` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Anti-fake QR MAC (`?m=`) forwarding to the KeyHalve rail.** Documents sealed
+  since QR-MAC enforcement carry `&m=` in their verify URL, and the rail gates
+  `GET /v1/piece/{id}` behind it. `verifyIntent` now accepts the value as an
+  explicit option — `verifyIntent(id, key, { qrMac })` — and forwards it as
+  `?m=` on the rail piece request. Previously the MAC was never forwarded, so
+  MAC-gated documents 403'd and surfaced as a generic `rail_error` ("rail
+  unreachable") even though the rail was healthy.
+- **Distinct fail-closed MAC errors (never network errors).** Rail 403
+  `mac_invalid` → `ValidPayError("qr_mac_invalid")` — the presented QR/URL is
+  not the one issued for this document; treat it as fraudulent. Rail 403
+  `mac_required` → `ValidPayError("qr_mac_required")` — the caller must supply
+  the document's anti-fake code (`m`) from its QR/URL. Real transport failures
+  remain `rail_unreachable` / `rail_error`. The pinned-key Ed25519 signature
+  verification of the rail response is unchanged.
+
+### Added
+
+- `VerifyIntentOptions` (with `qrMac`) and the `QR_MAC_RE` shape
+  (`/^[A-Za-z0-9_-]{8,16}$/`) are exported for callers that parse verify URLs.
+
 ## [0.9.0] — 2026-07-02
 
 ### Added
