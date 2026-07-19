@@ -20,6 +20,11 @@ import {
   QR_MAC_RE,
 } from "./rail.js";
 import {
+  sealDocumentWithHttp,
+  type SealDocumentParams,
+  type SealDocumentResult,
+} from "./seal.js";
+import {
   ValidPayError,
   type ValidPayClientOptions,
   type CreateIntentParams,
@@ -288,6 +293,29 @@ export class ValidPayClient {
       key: resultKey,
       ...(data.qr_mac ? { qrMac: data.qr_mac } : {}),
     };
+  }
+
+  /**
+   * ONE-CALL document seal (seal-at-source v0.2): a PDF goes in, the
+   * sealed+stamped PDF comes out — one artifact, where the file you
+   * distribute IS the file that verifies.
+   *
+   * Orchestrates the API's reserve→commit pair with ALL crypto local:
+   * reserve the identity, End-Cell-split a fresh AES-256 key (rail +
+   * platform custody, like {@link createEndCellIntent}), stamp the converged
+   * verify QR into the PDF, encrypt the STAMPED bytes, and commit. Requires
+   * an account-linked API key with the `intent:create` scope, plus the
+   * optional peer deps `pdf-lib` and `qrcode` (`npm i pdf-lib qrcode`).
+   *
+   * The returned `verifyUrl` contains the decryption key (ShareA) in its
+   * `#key=` fragment — deliver it only via the stamped document/QR or
+   * directly to the recipient. PDF input only in v0.2.
+   */
+  async sealDocument(params: SealDocumentParams): Promise<SealDocumentResult> {
+    return sealDocumentWithHttp(
+      { request: (method, path, opts) => this.request(method, path, opts) },
+      params,
+    );
   }
 
   async createIntentBatch(items: BatchIntentItem[]): Promise<CreateIntentResult[]> {

@@ -43,6 +43,7 @@ export {
   buildVerifyUrl,
   resolveQrRect,
   embedQr,
+  readPdfPageSizes,
   MIN_RECOMMENDED_QR_PT,
   type QrAnchor,
   type QrUnit,
@@ -51,4 +52,11 @@ export {
   type ResolvedQrRect,
   type QrRenderOptions,
   type EmbedQrOptions,
+  type PdfPageSize,
 } from "./pdf.js";
+export {
+  DEFAULT_SEAL_PLACEMENT,
+  type SealDocumentParams,
+  type SealDocumentFields,
+  type SealDocumentResult,
+} from "./seal.js";

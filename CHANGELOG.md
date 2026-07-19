@@ -6,6 +6,34 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`client.sealDocument(params)` — the ONE-CALL document seal (seal-at-source
+  v0.2).** A PDF goes in (bytes or path), the sealed+stamped PDF comes out:
+  the file you distribute IS the file that verifies. Orchestrates the API's
+  reserve→commit pair (`POST /v1/intent/reserve` + `POST /v1/intent/commit`,
+  ValidPay-API #145) with ALL crypto local — reserve the identity, End-Cell
+  split a fresh AES-256 key (rail + platform custody, same as
+  `createEndCellIntent`), stamp the converged verify QR (`?t=&m=#key=`) into
+  the PDF via `embedQr` (every page with `allPages: true`; page 1 recorded as
+  the canonical `qr_placement`, matching the dashboard wizard), encrypt the
+  STAMPED bytes, commitment v2 over the ciphertext, commit against the held
+  draft. Returns `{ sealedPdf, intentId, qrMac, verifyUrl, certificateUrl,
+  verificationUrl }`. Requires an account-linked API key with `intent:create`
+  and the optional peer deps `pdf-lib` + `qrcode`. PDF input only in v0.2
+  (non-PDF throws `unsupported_file_type`); `validFrom` is not part of the
+  commit contract and throws `invalid_argument` (use `valid_until` only).
+  Commit failures carry `details.reservation_id` / `details.qr_mac` (the
+  draft stays held server-side, 24 h TTL, fail-closed); network-shaped commit
+  failures are retried once automatically, and a retry answered
+  `already_committed` (lost response) is recovered as success.
+- `readPdfPageSizes(pdf)` — page geometry helper (points) on the same lazy
+  `pdf-lib` loader as `embedQr`; used to convert the canonical placement to
+  the commit contract's center-percent `qr_placement` record.
+- New exports: `DEFAULT_SEAL_PLACEMENT` (1.0 in QR, bottom-right, 0.5 in
+  inset), `SealDocumentParams`, `SealDocumentFields`, `SealDocumentResult`,
+  `PdfPageSize`.
+
 ### Fixed
 
 - **Anti-fake QR MAC (`?m=`) forwarding to the KeyHalve rail.** Documents sealed
