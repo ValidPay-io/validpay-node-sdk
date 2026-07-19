@@ -138,3 +138,51 @@ describe("embedQr", () => {
     ).rejects.toThrow(ValidPayError);
   });
 });
+
+// ── Converged verify-URL shape: <base>/verify/<id>[?t=<tenant>][&m=<qrMac>]#key=…
+//    (t before m; params omitted when absent; bare legacy shape unchanged). ──
+describe("buildVerifyUrl — tenant (?t=) + anti-fake QR MAC (?m=)", () => {
+  it("emits ?t= alone", () => {
+    expect(buildVerifyUrl("vp_x", "deadbeef", { tenant: "validpay" })).toBe(
+      "https://verify.keyhalve.com/verify/vp_x?t=validpay#key=deadbeef",
+    );
+  });
+
+  it("emits ?m= alone", () => {
+    expect(buildVerifyUrl("vp_x", "deadbeef", { qrMac: "X6n5UyGi" })).toBe(
+      "https://verify.keyhalve.com/verify/vp_x?m=X6n5UyGi#key=deadbeef",
+    );
+  });
+
+  it("emits both with t BEFORE m (converged shape)", () => {
+    expect(
+      buildVerifyUrl("vp_x", "deadbeef", { tenant: "validpay", qrMac: "X6n5UyGi" }),
+    ).toBe("https://verify.keyhalve.com/verify/vp_x?t=validpay&m=X6n5UyGi#key=deadbeef");
+  });
+
+  it("keeps the bare legacy shape byte-identical when neither is given", () => {
+    expect(buildVerifyUrl("vp_x", "deadbeef")).toBe(
+      "https://verify.keyhalve.com/verify/vp_x#key=deadbeef",
+    );
+    expect(buildVerifyUrl("vp_x", "deadbeef", {})).toBe(
+      "https://verify.keyhalve.com/verify/vp_x#key=deadbeef",
+    );
+  });
+
+  it("composes with a custom baseUrl", () => {
+    expect(
+      buildVerifyUrl("vp_x", "k", {
+        baseUrl: "https://validpay.com/",
+        tenant: "validpay",
+        qrMac: "Abc123_-",
+      }),
+    ).toBe("https://validpay.com/verify/vp_x?t=validpay&m=Abc123_-#key=k");
+  });
+
+  it("fails closed on a malformed qrMac or empty tenant", () => {
+    expect(() => buildVerifyUrl("vp_x", "k", { qrMac: "short" })).toThrow(ValidPayError);
+    expect(() => buildVerifyUrl("vp_x", "k", { qrMac: "x".repeat(17) })).toThrow(ValidPayError);
+    expect(() => buildVerifyUrl("vp_x", "k", { qrMac: "bad!chars" })).toThrow(ValidPayError);
+    expect(() => buildVerifyUrl("vp_x", "k", { tenant: "" })).toThrow(ValidPayError);
+  });
+});

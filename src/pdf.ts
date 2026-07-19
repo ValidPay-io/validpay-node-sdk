@@ -23,6 +23,7 @@
  * different library.
  */
 import { ValidPayError } from "./types.js";
+import { QR_MAC_RE } from "./rail.js";
 
 // ── Canonical placement contract ───────────────────────────────────────────
 
@@ -74,6 +75,15 @@ export const MIN_RECOMMENDED_QR_PT = 72;
 export interface VerifyUrlOptions {
   /** Web origin that serves `/verify`. Default `"https://verify.keyhalve.com"`. */
   baseUrl?: string;
+  /** Tenant slug for the branded verify page — emitted as `?t=` (e.g. `"validpay"`). */
+  tenant?: string;
+  /**
+   * Anti-fake QR MAC from the CREATION response (`CreateIntentResult.qrMac`) —
+   * emitted as `?m=`, before the `#key=` fragment. MANDATORY for End-Cell seals
+   * minted under QR-MAC enforcement: the rail gates the document's share behind
+   * it, so a QR built without it scans RED. Shape `/^[A-Za-z0-9_-]{8,16}$/`.
+   */
+  qrMac?: string;
 }
 
 /** base64 → base64url. Phone QR scanners and share-sheets mangle `+`, `/`,
@@ -84,9 +94,14 @@ function toBase64Url(b64: string): string {
 }
 
 /**
- * Build the canonical verify URL the QR encodes:
+ * Build the canonical verify URL the QR encodes (converged shape):
  *
- *     <baseUrl>/verify/<retrievalId>#key=<base64url(key)>
+ *     <baseUrl>/verify/<retrievalId>[?t=<tenant>][&m=<qrMac>]#key=<base64url(key)>
+ *
+ * Query params come in the order `t` then `m` and are omitted when absent —
+ * with neither given the legacy bare shape is emitted byte-identically.
+ * `m` is the rail-minted anti-fake QR MAC from the creation response
+ * (`CreateIntentResult.qrMac`); MAC-gated documents scan RED without it.
  *
  * The key is placed in the URL FRAGMENT (`#key=`), which browsers never send
  * to any server — so the decryption share rides along with the scan without
@@ -104,8 +119,21 @@ export function buildVerifyUrl(
   if (!key) {
     throw new ValidPayError("invalid_argument", "key is required");
   }
+  if (opts.qrMac !== undefined && !QR_MAC_RE.test(opts.qrMac)) {
+    throw new ValidPayError(
+      "invalid_argument",
+      "qrMac must be the creation response's qr_mac (8–16 chars of [A-Za-z0-9_-])",
+    );
+  }
+  if (opts.tenant !== undefined && opts.tenant === "") {
+    throw new ValidPayError("invalid_argument", "tenant must be non-empty when given");
+  }
   const base = (opts.baseUrl ?? "https://verify.keyhalve.com").replace(/\/+$/, "");
-  return `${base}/verify/${encodeURIComponent(retrievalId)}#key=${toBase64Url(key)}`;
+  const params: string[] = [];
+  if (opts.tenant !== undefined) params.push(`t=${encodeURIComponent(opts.tenant)}`);
+  if (opts.qrMac !== undefined) params.push(`m=${encodeURIComponent(opts.qrMac)}`);
+  const query = params.length > 0 ? `?${params.join("&")}` : "";
+  return `${base}/verify/${encodeURIComponent(retrievalId)}${query}#key=${toBase64Url(key)}`;
 }
 
 // ── Coordinate math (the single source of truth) ────────────────────────────
@@ -180,6 +208,11 @@ export interface EmbedQrOptions {
   placement: QrPlacement;
   /** Verify URL base. Default `"https://verify.keyhalve.com"`. */
   baseUrl?: string;
+  /** Tenant slug for the branded verify page (`?t=`). */
+  tenant?: string;
+  /** Anti-fake QR MAC from `createEndCellIntent` (`CreateIntentResult.qrMac`) —
+   *  REQUIRED for MAC-gated seals or the stamped QR scans RED. */
+  qrMac?: string;
   /** QR rendering tweaks. */
   qr?: QrRenderOptions;
 }
@@ -218,7 +251,11 @@ export async function embedQr(
   const { PDFDocument } = await loadPdfLib();
   const qrcode = await loadQrcode();
 
-  const url = buildVerifyUrl(opts.retrievalId, opts.key, { baseUrl: opts.baseUrl });
+  const url = buildVerifyUrl(opts.retrievalId, opts.key, {
+    baseUrl: opts.baseUrl,
+    tenant: opts.tenant,
+    qrMac: opts.qrMac,
+  });
   const q = opts.qr ?? {};
   const dataUrl: string = await qrcode.toDataURL(url, {
     errorCorrectionLevel: q.errorCorrectionLevel ?? "M",

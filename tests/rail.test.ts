@@ -174,6 +174,15 @@ describe("fetchRailPiece — M2 content binding (dual signing, sig_v 2)", () => 
     await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT)).rejects.toThrow(/version/i);
   });
 
+  it("forwards qrMac alongside an expected commitment (both features compose)", async () => {
+    const { privateKey, spkiB64 } = makeKey();
+    const f = vi.fn().mockResolvedValue(resp(v2body(privateKey)));
+    await expect(
+      fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, COMMITMENT, "X6n5UyGi"),
+    ).resolves.toBe(PIECE);
+    expect(String(f.mock.calls[0]![0])).toBe(`https://rail.test/v1/piece/${INTENT}?m=X6n5UyGi`);
+  });
+
   it("sig_v 1 (and absent sig_v) keeps verifying exactly as before — existing pieces unaffected", async () => {
     const { privateKey, spkiB64 } = makeKey();
     const absent = vi.fn().mockResolvedValue(
@@ -184,5 +193,78 @@ describe("fetchRailPiece — M2 content binding (dual signing, sig_v 2)", () => 
       resp({ holder: "keyhalve", piece: PIECE, sig: sig(privateKey, INTENT, PIECE), sig_v: 1 }),
     );
     await expect(fetchRailPiece(explicit, "https://rail.test", spkiB64, INTENT, COMMITMENT)).resolves.toBe(PIECE);
+  });
+});
+
+// ── Anti-fake QR MAC (?m=) forwarding + distinct fail-closed error mapping.
+//    MAC-gated documents (sealed since QR_MAC_ENFORCE) 403 on a bare piece GET;
+//    the rail's MAC verdicts must NEVER surface as network/"rail down" errors. ──
+describe("fetchRailPiece — anti-fake QR MAC (?m=)", () => {
+  it("forwards qrMac as ?m= on the piece request", async () => {
+    const { privateKey, spkiB64 } = makeKey();
+    const f = vi.fn().mockResolvedValue(
+      resp({ holder: "keyhalve", piece: PIECE, sig: sig(privateKey, INTENT, PIECE), alg: "ed25519" }),
+    );
+    await expect(
+      fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, undefined, "X6n5UyGi"),
+    ).resolves.toBe(PIECE);
+    expect(String(f.mock.calls[0]![0])).toBe(`https://rail.test/v1/piece/${INTENT}?m=X6n5UyGi`);
+  });
+
+  it("sends no ?m= when qrMac is not given (legacy documents unchanged)", async () => {
+    const { privateKey, spkiB64 } = makeKey();
+    const f = vi.fn().mockResolvedValue(
+      resp({ holder: "keyhalve", piece: PIECE, sig: sig(privateKey, INTENT, PIECE) }),
+    );
+    await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT)).resolves.toBe(PIECE);
+    expect(String(f.mock.calls[0]![0])).toBe(`https://rail.test/v1/piece/${INTENT}`);
+  });
+
+  it("maps 403 mac_invalid to qr_mac_invalid — a FRAUD verdict, never a rail/network error", async () => {
+    const { spkiB64 } = makeKey();
+    const f = vi.fn().mockResolvedValue(resp({ error: "mac_invalid" }, 403));
+    await expect(
+      fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, undefined, "WrongMac1"),
+    ).rejects.toMatchObject({
+      name: "ValidPayError",
+      code: "qr_mac_invalid",
+      message: expect.stringMatching(/fraudulent/i),
+    });
+  });
+
+  it("maps 403 mac_required to qr_mac_required — actionable, never a rail/network error", async () => {
+    const { spkiB64 } = makeKey();
+    const f = vi.fn().mockResolvedValue(resp({ error: "mac_required" }, 403));
+    await expect(fetchRailPiece(f, "https://rail.test", spkiB64, INTENT)).rejects.toMatchObject({
+      name: "ValidPayError",
+      code: "qr_mac_required",
+      message: expect.stringMatching(/anti-fake code/i),
+    });
+  });
+
+  it("keeps other 403s (and unparseable 403 bodies) as rail_error", async () => {
+    const { spkiB64 } = makeKey();
+    const other = vi.fn().mockResolvedValue(resp({ error: "forbidden" }, 403));
+    await expect(fetchRailPiece(other, "https://rail.test", spkiB64, INTENT)).rejects.toMatchObject({
+      code: "rail_error",
+    });
+    const unparseable = vi.fn().mockResolvedValue({
+      status: 403,
+      ok: false,
+      json: async () => {
+        throw new Error("not json");
+      },
+    } as unknown as Response);
+    await expect(
+      fetchRailPiece(unparseable, "https://rail.test", spkiB64, INTENT),
+    ).rejects.toMatchObject({ code: "rail_error" });
+  });
+
+  it("a real network failure still maps to rail_unreachable (unchanged)", async () => {
+    const { spkiB64 } = makeKey();
+    const f = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    await expect(
+      fetchRailPiece(f, "https://rail.test", spkiB64, INTENT, undefined, "X6n5UyGi"),
+    ).rejects.toMatchObject({ code: "rail_unreachable" });
   });
 });

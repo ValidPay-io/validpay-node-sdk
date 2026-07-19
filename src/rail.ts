@@ -18,6 +18,9 @@ export const KEYHALVE_RAIL_PUBLIC_KEY_SPKI_B64 =
 
 const HOLDER = "keyhalve";
 
+/** Shape of the anti-fake QR MAC (`?m=` on the verify URL / `qrMac` option). */
+export const QR_MAC_RE = /^[A-Za-z0-9_-]{8,16}$/;
+
 /** v1 canonical payload — custody only. The rail's `sig` field is ALWAYS over this,
  *  for every piece (dual signing) — unchanged forever (back-compat). */
 function canonicalMessage(intentId: string, piece: string): string {
@@ -60,6 +63,14 @@ interface RailPieceResponse {
  * `sig` is verified over the v1 payload for EVERY response, exactly as always —
  * existing pieces and old rails are unaffected.
  *
+ * Anti-fake QR MAC (QR_MAC_ENFORCE): documents sealed since MAC enforcement carry
+ * `&m=` in their verify URL, and the rail gates their piece behind it. Pass that
+ * value as `qrMac` and it is forwarded as `?m=` on the piece request. The rail's
+ * MAC verdicts are surfaced as DISTINCT fail-closed errors, never as network
+ * errors: 403 `mac_invalid` → `qr_mac_invalid` (the presented QR/URL is not the
+ * one issued for this document — treat as fraudulent), 403 `mac_required` →
+ * `qr_mac_required` (the caller must supply the document's `m`).
+ *
  * M2 content binding (dual signing): when the response advertises a binding
  * (`sig_v: 2` / `commitment` / `commitment_sig` present), the SDK additionally
  * requires a well-formed commitment + `commitment_sig`, verifies `commitment_sig`
@@ -74,11 +85,13 @@ export async function fetchRailPiece(
   pinnedSpkiB64: string,
   intentId: string,
   expectedCommitmentHex?: string,
+  qrMac?: string,
 ): Promise<string> {
   const base = railBaseUrl.replace(/\/+$/, "");
+  const macQuery = qrMac !== undefined ? `?m=${encodeURIComponent(qrMac)}` : "";
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/v1/piece/${encodeURIComponent(intentId)}`, {
+    res = await fetchImpl(`${base}/v1/piece/${encodeURIComponent(intentId)}${macQuery}`, {
       method: "GET",
       headers: { Accept: "application/json" },
     });
@@ -88,6 +101,29 @@ export async function fetchRailPiece(
 
   if (res.status === 404) throw new ValidPayError("rail_not_found", "Rail share not found");
   if (res.status === 409) throw new ValidPayError("rail_revoked", "Rail share revoked");
+  if (res.status === 403) {
+    // Anti-fake QR MAC gate. These are RAIL VERDICTS about the presented QR/URL,
+    // not availability problems — never degrade them to a network/rail error.
+    let errCode: string | undefined;
+    try {
+      errCode = ((await res.json()) as RailPieceResponse).error;
+    } catch {
+      // unparseable body → generic rail_error below
+    }
+    if (errCode === "mac_invalid") {
+      throw new ValidPayError(
+        "qr_mac_invalid",
+        "Anti-fake code rejected — the QR/URL's `m` code is not the one issued for this document. Treat this document as fraudulent.",
+      );
+    }
+    if (errCode === "mac_required") {
+      throw new ValidPayError(
+        "qr_mac_required",
+        "This document requires its anti-fake code (`m`) from its QR/URL — pass the full verify URL's `?m=` value (qrMac) to verify it.",
+      );
+    }
+    throw new ValidPayError("rail_error", `Rail returned 403${errCode ? ` (${errCode})` : ""}`);
+  }
   if (!res.ok) throw new ValidPayError("rail_error", `Rail returned ${res.status}`);
 
   const json = (await res.json()) as RailPieceResponse;

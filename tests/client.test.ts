@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { generateKeyPairSync, sign as nodeSign } from "node:crypto";
 import { ValidPayClient } from "../src/client.js";
 import {
   decrypt,
@@ -8,6 +9,7 @@ import {
   buildAad,
   splitKey,
   combineKeyShares,
+  splitKeyPieces,
   encryptFields,
   buildKeyMap,
 } from "../src/crypto.js";
@@ -708,5 +710,200 @@ describe("ValidPayClient", () => {
     expect(h).toEqual({ status: "ok", version: "1.2.3" });
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect((init.headers as Record<string, string>)["Authorization"]).toBeUndefined();
+  });
+});
+
+// ── Anti-fake QR MAC (?m=) forwarding through verifyIntent (End-Cell).
+//    The verify URL's `m` must reach the rail piece request; MAC verdicts must
+//    surface as their own fail-closed codes, never as network/rail errors. ──
+describe("ValidPayClient — verifyIntent anti-fake QR MAC (qrMac)", () => {
+  function endCellWorld() {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const spkiB64 = (publicKey.export({ format: "der", type: "spki" }) as Buffer).toString(
+      "base64",
+    );
+    const fullKey = generateKey();
+    // holders: ["keyhalve", "platform"] → [ShareA, railPiece, platformPiece]
+    const [shareA, railPiece, platformPiece] = splitKeyPieces(fullKey, 2) as [
+      string,
+      string,
+      string,
+    ];
+    const payload = { invoice: 42 };
+    const blob = encrypt(JSON.stringify(payload), fullKey);
+    const railSig = nodeSign(
+      null,
+      Buffer.from(`keyhalve-rail.v1\nvp_mac\nkeyhalve\n${railPiece}`, "utf8"),
+      privateKey,
+    ).toString("base64");
+    return { spkiB64, shareA, railPiece, platformPiece, payload, blob, railSig };
+  }
+
+  function makeFetch(w: ReturnType<typeof endCellWorld>, railHandler?: (url: string) => Response) {
+    return vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("rail.example.test")) {
+        if (railHandler) return railHandler(u);
+        return jsonResponse(200, {
+          intent_id: "vp_mac",
+          holder: "keyhalve",
+          piece: w.railPiece,
+          sig: w.railSig,
+          alg: "ed25519",
+        });
+      }
+      if (u.endsWith("/fragment")) {
+        return jsonResponse(200, {
+          intent_id: "vp_mac",
+          end_cell: true,
+          holders: ["platform"],
+          pieces: { platform: w.platformPiece },
+        });
+      }
+      return jsonResponse(200, {
+        intent_id: "vp_mac",
+        encrypted_payload: w.blob,
+        issuer: "Acme",
+        issuer_verified: true,
+        registered_at: "2026-07-01T00:00:00Z",
+        status: "active",
+        end_cell: true,
+        commitment_hash: commitmentHash(w.blob),
+        commitment_version: 2,
+      });
+    });
+  }
+
+  function makeClient(w: ReturnType<typeof endCellWorld>, fetchMock: ReturnType<typeof makeFetch>) {
+    return new ValidPayClient({
+      apiKey: "k",
+      baseUrl: "https://api.example.test",
+      railBaseUrl: "https://rail.example.test",
+      railPublicKeySpki: w.spkiB64,
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+  }
+
+  it("forwards options.qrMac as ?m= on the rail piece request and verifies", async () => {
+    const w = endCellWorld();
+    const fetchMock = makeFetch(w);
+    const client = makeClient(w, fetchMock);
+    const result = await client.verifyIntent("vp_mac", w.shareA, { qrMac: "X6n5UyGi" });
+    expect(result.payload).toEqual(w.payload);
+    const railCall = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .find((u) => u.includes("rail.example.test"));
+    expect(railCall).toBe("https://rail.example.test/v1/piece/vp_mac?m=X6n5UyGi");
+  });
+
+  it("keeps the bare rail request (no ?m=) when no qrMac is given — legacy path unchanged", async () => {
+    const w = endCellWorld();
+    const fetchMock = makeFetch(w);
+    const client = makeClient(w, fetchMock);
+    const result = await client.verifyIntent("vp_mac", w.shareA);
+    expect(result.payload).toEqual(w.payload);
+    const railCall = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .find((u) => u.includes("rail.example.test"));
+    expect(railCall).toBe("https://rail.example.test/v1/piece/vp_mac");
+  });
+
+  it("surfaces rail 403 mac_invalid as qr_mac_invalid — a fraud verdict, not rail_error", async () => {
+    const w = endCellWorld();
+    const fetchMock = makeFetch(w, () => jsonResponse(403, { error: "mac_invalid" }));
+    const client = makeClient(w, fetchMock);
+    await expect(
+      client.verifyIntent("vp_mac", w.shareA, { qrMac: "WrongMac1" }),
+    ).rejects.toMatchObject({
+      name: "ValidPayError",
+      code: "qr_mac_invalid",
+      message: expect.stringMatching(/fraudulent/i),
+    });
+  });
+
+  it("surfaces rail 403 mac_required as qr_mac_required — actionable, not rail_error", async () => {
+    const w = endCellWorld();
+    const fetchMock = makeFetch(w, () => jsonResponse(403, { error: "mac_required" }));
+    const client = makeClient(w, fetchMock);
+    await expect(client.verifyIntent("vp_mac", w.shareA)).rejects.toMatchObject({
+      name: "ValidPayError",
+      code: "qr_mac_required",
+      message: expect.stringMatching(/anti-fake code/i),
+    });
+  });
+
+  it("rejects a malformed qrMac up front (invalid_argument) without any network call", async () => {
+    const w = endCellWorld();
+    const fetchMock = makeFetch(w);
+    const client = makeClient(w, fetchMock);
+    for (const qrMac of ["", "short", "has spaces!", "way-too-long-for-a-mac-value", "bad$chars"]) {
+      await expect(client.verifyIntent("vp_mac", w.shareA, { qrMac })).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── Seal-side half of the MAC class: POST /v1/intent returns the rail-minted
+//    anti-fake qr_mac (one-time, seal moment). Dropping it produces QRs that
+//    scan RED — every creation path must surface it as CreateIntentResult.qrMac. ──
+describe("ValidPayClient — creation surfaces the rail-minted anti-fake qr_mac", () => {
+  function clientWith(body: Record<string, unknown>) {
+    const fetchMock = vi.fn(async () => jsonResponse(201, body));
+    return new ValidPayClient({
+      apiKey: "k",
+      baseUrl: "https://api.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+  }
+
+  it("createEndCellIntent returns qrMac when the API minted one", async () => {
+    const client = clientWith({ retrieval_id: "vp_mac1", status: "active", qr_mac: "X6n5UyGi" });
+    const result = await client.createEndCellIntent({ documentType: "check", payload: { a: 1 } });
+    expect(result.retrievalId).toBe("vp_mac1");
+    expect(result.qrMac).toBe("X6n5UyGi");
+  });
+
+  it("createIntent and createFileIntent surface qr_mac when present", async () => {
+    const c1 = clientWith({ retrieval_id: "vp_mac2", status: "active", qr_mac: "Abc123_-" });
+    const r1 = await c1.createIntent({ documentType: "invoice", payload: { a: 1 } });
+    expect(r1.qrMac).toBe("Abc123_-");
+
+    const c2 = clientWith({ retrieval_id: "vp_mac3", status: "active", qr_mac: "Abc123_-" });
+    const r2 = await c2.createFileIntent({
+      documentType: "invoice",
+      file: Buffer.from("file-bytes"),
+    });
+    expect(r2.qrMac).toBe("Abc123_-");
+  });
+
+  it("omits qrMac entirely for legacy responses without qr_mac", async () => {
+    const client = clientWith({ retrieval_id: "vp_legacy", status: "active" });
+    const result = await client.createEndCellIntent({ documentType: "check", payload: { a: 1 } });
+    expect(result.qrMac).toBeUndefined();
+    expect("qrMac" in result).toBe(false);
+  });
+
+  it("createIntentBatch threads a per-item qr_mac defensively", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(201, {
+        results: [
+          { retrieval_id: "vp_b1", qr_mac: "X6n5UyGi" },
+          { retrieval_id: "vp_b2" },
+        ],
+      }),
+    );
+    const client = new ValidPayClient({
+      apiKey: "k",
+      baseUrl: "https://api.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const results = await client.createIntentBatch([
+      { documentType: "invoice", payload: { a: 1 } },
+      { documentType: "invoice", payload: { b: 2 } },
+    ]);
+    expect(results[0]!.qrMac).toBe("X6n5UyGi");
+    expect(results[1]!.qrMac).toBeUndefined();
   });
 });
