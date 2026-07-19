@@ -298,6 +298,27 @@ export async function embedQr(
   return doc.save();
 }
 
+/** One page's media-box size, in points. */
+export interface PdfPageSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * Read the page sizes (points) of a PDF — the geometry `sealDocument` needs
+ * to convert a canonical {@link QrPlacement} into the commit contract's
+ * center-percent `qr_placement` record. Requires the optional peer dep
+ * `pdf-lib` (same lazy load as {@link embedQr}); the input is not mutated.
+ */
+export async function readPdfPageSizes(pdf: Uint8Array): Promise<PdfPageSize[]> {
+  if (!(pdf instanceof Uint8Array) || pdf.length === 0) {
+    throw new ValidPayError("invalid_argument", "pdf must be non-empty Uint8Array/Buffer bytes");
+  }
+  const { PDFDocument } = await loadPdfLib();
+  const doc = await PDFDocument.load(pdf);
+  return doc.getPages().map((p) => p.getSize());
+}
+
 // ── internals ───────────────────────────────────────────────────────────────
 
 /** Decode a `data:image/png;base64,...` URL to raw bytes (Node or browser). */

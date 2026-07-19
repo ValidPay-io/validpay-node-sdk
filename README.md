@@ -56,6 +56,43 @@ console.log(result.issuerVerified);      // true
 > share, so the platform alone could reconstruct. Prefer **End-Cell** above when
 > independence from the platform matters.
 
+### One-call document seal (`sealDocument`) — recommended for PDFs
+
+File in, sealed+stamped PDF out. `sealDocument` runs the reserve→commit flow
+against the ValidPay API so the QR is stamped INTO the document **before** it
+is encrypted — the sealed artifact and the distributed artifact are the same
+file. All crypto is local: the AES-256 key is End-Cell split (QR + KeyHalve
+rail + platform), and neither the key nor the plaintext ever leaves your
+process. Requires an account-linked API key with `intent:create` plus the
+optional peer deps `pdf-lib` and `qrcode`.
+
+```ts
+import { ValidPayClient } from "@validpay/node-sdk";
+import { writeFile } from "node:fs/promises";
+
+const client = new ValidPayClient({ apiKey: process.env.VALIDPAY_API_KEY! });
+
+const result = await client.sealDocument({
+  file: "invoice-1001.pdf",              // bytes or a path; PDF only in v0.2
+  documentType: "invoice",
+  fields: { reference: "INV-1001", notes: "net 30" }, // disclosed plaintext
+  // placement default: 1.0in QR, bottom-right, 0.5in inset. Or:
+  // placement: { anchor: "top-right", x: 0.5, y: 0.5, width: 1.2, units: "in" },
+  // allPages: true,                     // stamp every page (wizard-style)
+  validUntil: "2027-01-01T00:00:00Z",
+});
+
+await writeFile("invoice-1001-sealed.pdf", result.sealedPdf); // distribute THIS
+// result.verifyUrl        — what the stamped QR encodes (CONTAINS the key in #key=)
+// result.certificateUrl   — key-free neutral certificate page (safe to share)
+// result.verificationUrl  — key-free verify URL from the API response
+```
+
+If the commit step fails, the reservation stays held server-side (24 h TTL,
+fail-closed — the id verifies as `not_found` until committed) and the error's
+`details` carry `reservation_id` + `qr_mac`. Network-shaped commit failures
+are retried once automatically.
+
 ### Building a verification URL
 
 The `retrievalId` is public; the `key` is secret. Stamp them into a URL fragment (the `#` part — fragments are never sent to the server, even by curl) so a single link both identifies the intent and decrypts it:
