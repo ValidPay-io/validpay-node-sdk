@@ -102,6 +102,15 @@ export interface SelectiveIntentParams {
 export interface CreateIntentResult {
   retrievalId: string;
   key: string;
+  /**
+   * Anti-fake QR MAC minted by the rail at seal time (End-Cell seals under
+   * QR-MAC enforcement). ONE-TIME: it is returned only on this creation
+   * response — it is never served by any public endpoint afterwards. It MUST
+   * ride the verify URL as `?m=` (pass it to `buildVerifyUrl`'s `qrMac`
+   * option): the rail gates the document's share behind it, so a QR built
+   * without it scans RED. Absent for legacy / non-End-Cell seals.
+   */
+  qrMac?: string;
 }
 
 /** Options for {@link ValidPayClient.verifyIntent}. */
@@ -183,10 +192,13 @@ export interface RawIntentResponse {
 export interface RawCreateIntentResponse {
   retrieval_id: string;
   status: string;
+  /** Anti-fake QR MAC — present only when the rail minted one at deposit
+   *  (End-Cell seals under QR-MAC enforcement). One-time: seal moment only. */
+  qr_mac?: string;
 }
 
 export interface RawBatchCreateResponse {
-  results: Array<{ retrieval_id: string; status?: string }>;
+  results: Array<{ retrieval_id: string; status?: string; qr_mac?: string }>;
 }
 
 export interface ListIntentsParams {

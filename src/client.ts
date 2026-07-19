@@ -146,7 +146,11 @@ export class ValidPayClient {
         details: data,
       });
     }
-    return { retrievalId: data.retrieval_id, key: resultKey };
+    return {
+      retrievalId: data.retrieval_id,
+      key: resultKey,
+      ...(data.qr_mac ? { qrMac: data.qr_mac } : {}),
+    };
   }
 
   /**
@@ -206,7 +210,13 @@ export class ValidPayClient {
         details: data,
       });
     }
-    return { retrievalId: data.retrieval_id, key: shareA };
+    // The rail-minted anti-fake QR MAC is ONE-TIME (seal moment only) — it must
+    // reach the caller so the verify URL/QR carries ?m= (see buildVerifyUrl).
+    return {
+      retrievalId: data.retrieval_id,
+      key: shareA,
+      ...(data.qr_mac ? { qrMac: data.qr_mac } : {}),
+    };
   }
 
   /**
@@ -273,7 +283,11 @@ export class ValidPayClient {
         details: data,
       });
     }
-    return { retrievalId: data.retrieval_id, key: resultKey };
+    return {
+      retrievalId: data.retrieval_id,
+      key: resultKey,
+      ...(data.qr_mac ? { qrMac: data.qr_mac } : {}),
+    };
   }
 
   async createIntentBatch(items: BatchIntentItem[]): Promise<CreateIntentResult[]> {
@@ -346,7 +360,13 @@ export class ValidPayClient {
           details: data,
         });
       }
-      return { retrievalId: row.retrieval_id, key: keys[i]! };
+      // The batch path rejects End-Cell today (no qr_mac), but thread it
+      // defensively so a future MAC-minting batch response is never dropped.
+      return {
+        retrievalId: row.retrieval_id,
+        key: keys[i]!,
+        ...(row.qr_mac ? { qrMac: row.qr_mac } : {}),
+      };
     });
   }
 
@@ -641,7 +661,11 @@ export class ValidPayClient {
         details: data,
       });
     }
-    return { retrievalId: data.retrieval_id, key: qrKey };
+    return {
+      retrievalId: data.retrieval_id,
+      key: qrKey,
+      ...(data.qr_mac ? { qrMac: data.qr_mac } : {}),
+    };
   }
 
   async verifySelectiveIntent(

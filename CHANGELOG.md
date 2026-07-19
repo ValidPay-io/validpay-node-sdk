@@ -23,8 +23,21 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   remain `rail_unreachable` / `rail_error`. The pinned-key Ed25519 signature
   verification of the rail response is unchanged.
 
+- **Seal side: the rail-minted `qr_mac` is no longer dropped.** POST
+  `/v1/intent` returns a one-time `qr_mac` for End-Cell seals minted under
+  QR-MAC enforcement; the SDK silently discarded it, so freshly sealed
+  documents got QRs without `?m=` — which scan RED. Every creation path
+  (`createIntent`, `createEndCellIntent`, `createFileIntent`,
+  `createSelectiveIntent`, and per-item in `createIntentBatch`) now surfaces
+  it as `CreateIntentResult.qrMac`.
+
 ### Added
 
+- `buildVerifyUrl` / `embedQr` emit the converged verify-URL shape:
+  `<base>/verify/<id>[?t=<tenant>][&m=<qrMac>]#key=…` via new
+  `VerifyUrlOptions.tenant` and `VerifyUrlOptions.qrMac` (`t` before `m`,
+  params omitted when absent; the bare legacy shape is byte-identical when
+  neither is given).
 - `VerifyIntentOptions` (with `qrMac`) and the `QR_MAC_RE` shape
   (`/^[A-Za-z0-9_-]{8,16}$/`) are exported for callers that parse verify URLs.
 
