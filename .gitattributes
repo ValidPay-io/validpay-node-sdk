@@ -1,0 +1,3 @@
+# The Prompt 158 branded-QR contract must stay byte-identical across repos
+# (sha256-guarded in tests/brandedQr.test.ts) - never CRLF-convert it.
+src/brandedQr.ts text eol=lf

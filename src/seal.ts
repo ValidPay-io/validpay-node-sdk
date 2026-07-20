@@ -57,6 +57,7 @@ import {
   type QrAnchor,
   type QrPlacement,
 } from "./pdf.js";
+import { decideBrandedQr, PT_PER_MM } from "./brandedQr.js";
 import { ValidPayError } from "./types.js";
 
 /** Verify-page origin the QR URL is built against when none is given —
@@ -193,6 +194,17 @@ export interface SealDocumentResult {
    *  a security claim). Every entry CONTAINS THE DECRYPTION KEY in its
    *  `#key=` fragment — treat like {@link verifyUrl}. */
   pageVerifyUrls?: Array<{ page: number; url: string }>;
+  /** How the canonical page's QR was rendered under the shared branded-QR
+   *  contract (Prompt 158): `branded: true` means the stamped QR carries the
+   *  centered KeyHalve mark at EC-H; `false` means the placement was too
+   *  small for a reliable mark and the QR is plain EC-M (scan reliability
+   *  always wins over branding). `modulePitchMm` is the printed module pitch
+   *  the decision was made on (the mark turns on at ≥ 0.4 mm). */
+  brandedQr: {
+    branded: boolean;
+    errorCorrectionLevel: "H" | "M";
+    modulePitchMm: number;
+  };
 }
 
 /** The narrow HTTP seam `ValidPayClient` provides — its authenticated
@@ -573,11 +585,30 @@ export async function sealDocumentWithHttp(
       }
     }
 
+    // Branded-QR (Prompt 158) decision for the canonical page's stamp —
+    // recomputed with the exact URL that page's QR encodes (page-tagged on
+    // multi-page all-pages seals) and its exact printed size, so this always
+    // matches what embedQr drew.
+    const canonicalUrl = pageTagged
+      ? buildVerifyUrl(intentId, shareA, {
+          baseUrl: verifyBase,
+          tenant,
+          qrMac,
+          page: canonicalPage,
+        })
+      : verifyUrl;
+    const brandedDecision = decideBrandedQr(canonicalUrl, rect.size / PT_PER_MM);
+
     return {
       sealedPdf: Buffer.from(stamped),
       intentId,
       qrMac,
       verifyUrl,
+      brandedQr: {
+        branded: brandedDecision.showLogo,
+        errorCorrectionLevel: brandedDecision.errorCorrectionLevel,
+        modulePitchMm: brandedDecision.modulePitchMm,
+      },
       certificateUrl: `${verifyBase}/certificate/${encodeURIComponent(intentId)}`,
       verificationUrl:
         data.verification_url ??

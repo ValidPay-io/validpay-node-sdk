@@ -1,0 +1,16 @@
+{
+  // The Prompt 158 branded-QR contract file compiles in this tiny referenced
+  // project because it must stay BYTE-IDENTICAL across repos (see the note in
+  // tsconfig.json) and does not typecheck under noUncheckedIndexedAccess.
+  // ONLY that flag is relaxed, and ONLY for src/brandedQr.ts.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "noUncheckedIndexedAccess": false,
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "include": ["src/brandedQr.ts"],
+  "exclude": ["node_modules", "dist"],
+  "references": []
+}

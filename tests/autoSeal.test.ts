@@ -1,7 +1,8 @@
 /**
  * sealDocument smart-place ("auto" placement) + page-tag (&p=) tests.
  *
- * qrcode is mocked so every stamped QR's URL is CAPTURED — that lets the
+ * qrcode is mocked (toString + create, the vector-path surface) so every
+ * stamped QR's URL is CAPTURED — that lets the
  * tests assert the exact URL each page's QR encodes (page tags included)
  * without decoding rasterized QR images.
  */
@@ -18,17 +19,16 @@ const H = 792;
 const INTENT_ID = "vp_autoseal1234";
 const QR_MAC = "Ab3dEf5h";
 
-/** 1x1 transparent PNG — a real decodable image for pdf-lib's embedPng. */
-const TINY_PNG_DATA_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-
 const capturedQrUrls: string[] = [];
 vi.mock("qrcode", () => ({
   default: {
-    toDataURL: async (text: string) => {
+    // embedQr's vector path asks for the contract SVG…
+    toString: async (text: string) => {
       capturedQrUrls.push(text);
-      return TINY_PNG_DATA_URL;
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 25 25" shape-rendering="crispEdges"><path fill="#ffffff" d="M0 0h25v25H0z"/></svg>`;
     },
+    // …and the module matrix it draws as PDF rectangles.
+    create: () => ({ modules: { size: 21, data: new Uint8Array(21 * 21) } }),
   },
 }));
 

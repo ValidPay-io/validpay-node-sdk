@@ -24,6 +24,12 @@
  */
 import { ValidPayError } from "./types.js";
 import { QR_MAC_RE } from "./rail.js";
+import {
+  decideBrandedQr,
+  injectKeyhalveMark,
+  PT_PER_MM,
+  QR_MARGIN_MODULES,
+} from "./brandedQr.js";
 
 // ── Canonical placement contract ───────────────────────────────────────────
 
@@ -204,19 +210,40 @@ export function resolveQrRect(
 
 export interface QrRenderOptions {
   /**
-   * Error-correction level. Higher tolerates more print damage/smudging at
-   * the cost of density. Default `"M"` (15%); use `"Q"` (25%) for documents
-   * that get printed and re-scanned in the wild.
+   * Error-correction level OVERRIDE. When omitted (the default), the shared
+   * branded-QR contract ({@link decideBrandedQr}, Prompt 158) picks the level
+   * from the payload and printed size: `"H"` with the centered KeyHalve mark
+   * when every module still prints ≥ 0.4 mm, `"M"` plain below that.
+   * Setting this explicitly opts OUT of the contract: the QR renders plain at
+   * exactly this level (legacy behavior) — except `"H"`, which keeps the mark
+   * when the size allows it.
    */
   errorCorrectionLevel?: "L" | "M" | "Q" | "H";
-  /** Quiet-zone width in modules. Default `2`. Don't go below 1 or scanners struggle. */
+  /** Quiet-zone width in modules. Default `2` (the branded contract's
+   *  `QR_MARGIN_MODULES`). Any other value renders a plain QR (the contract's
+   *  size math assumes its own margin). Don't go below 1 or scanners struggle. */
   margin?: number;
-  /** Foreground (module) color. Default `"#0A0F1E"`. */
+  /** Foreground (module + mark ink) color. Default `"#0A0F1E"`. */
   darkColor?: string;
-  /** Background color. Default `"#FFFFFF"` — keep it opaque for contrast. */
+  /** Background (and mark paper) color. Default `"#FFFFFF"` — keep it opaque
+   *  for contrast. */
   lightColor?: string;
-  /** Raster resolution in px for the embedded image. Default `1024`. */
+  /**
+   * LEGACY — ignored. The QR (and the KeyHalve mark) are drawn as native PDF
+   * vector art now, which is resolution-independent; nothing is rasterized.
+   * Kept so existing call sites keep compiling.
+   */
   renderPx?: number;
+}
+
+/** How {@link embedQr} / {@link renderBrandedQrSvg} actually rendered a QR. */
+export interface QrBrandingInfo {
+  /** `true` when the centered KeyHalve mark was drawn into the QR. */
+  branded: boolean;
+  /** Error-correction level actually used. */
+  errorCorrectionLevel: "L" | "M" | "Q" | "H";
+  /** Printed module pitch (mm) at EC-H the contract decision was made on. */
+  modulePitchMm: number;
 }
 
 export interface EmbedQrOptions {
@@ -246,6 +273,13 @@ let smallQrWarned = false;
  * Stamp a scannable verify QR onto an existing PDF and return the new PDF
  * bytes. The input is not mutated.
  *
+ * The QR is drawn as native PDF VECTOR art (background, modules, and — when
+ * the shared branded-QR contract allows it — the centered KeyHalve
+ * split-circle mark), so it stays crisp at any zoom/print resolution. Whether
+ * the mark appears is decided by {@link decideBrandedQr} (Prompt 158) from
+ * the payload and the printed size alone: large enough placements get EC-H +
+ * mark, small ones stay plain EC-M exactly like before. No flags.
+ *
  * Requires the optional peer deps `pdf-lib` and `qrcode` (`npm i pdf-lib
  * qrcode`); it throws a `missing_dependency` ValidPayError if either is
  * absent. Works in Node and the browser (both libs are isomorphic).
@@ -271,7 +305,7 @@ export async function embedQr(
     throw new ValidPayError("invalid_argument", "placement.width must be > 0");
   }
 
-  const { PDFDocument } = await loadPdfLib();
+  const pdfLib = await loadPdfLib();
   const qrcode = await loadQrcode();
 
   const url = buildVerifyUrl(opts.retrievalId, opts.key, {
@@ -281,15 +315,8 @@ export async function embedQr(
     ...(opts.pageTag !== undefined ? { page: opts.pageTag } : {}),
   });
   const q = opts.qr ?? {};
-  const dataUrl: string = await qrcode.toDataURL(url, {
-    errorCorrectionLevel: q.errorCorrectionLevel ?? "M",
-    margin: q.margin ?? 2,
-    width: q.renderPx ?? 1024,
-    color: { dark: q.darkColor ?? "#0A0F1E", light: q.lightColor ?? "#FFFFFF" },
-  });
-  const pngBytes = dataUrlToBytes(dataUrl);
 
-  const doc = await PDFDocument.load(pdf);
+  const doc = await pdfLib.PDFDocument.load(pdf);
   const pages = doc.getPages();
   const pageIndex = (opts.placement.page ?? 1) - 1;
   if (pageIndex < 0 || pageIndex >= pages.length) {
@@ -317,9 +344,33 @@ export async function embedQr(
     );
   }
 
-  const png = await doc.embedPng(pngBytes);
-  page.drawImage(png, { x: rect.x, y: rect.y, width: rect.size, height: rect.size });
+  // The branded contract decides EC level + mark from payload and printed
+  // size; the mark's geometry is parsed back out of the contract's own SVG so
+  // this stays pixel-consistent with the console/website/checkbooks renderers.
+  const built = await buildBrandedQr(qrcode, url, rect.size, q);
+  drawQrVector(page, pdfLib.rgb, rect, built, q);
   return doc.save();
+}
+
+/**
+ * Render the verify QR exactly as {@link embedQr} decides it, but as the
+ * branded-contract SVG string (the `qrcode` SVG with the KeyHalve mark
+ * injected when the contract says so). `sizePt` is the printed edge length in
+ * points the decision is made for. Useful for previews and tests; requires
+ * the optional peer dep `qrcode`.
+ */
+export async function renderBrandedQrSvg(
+  url: string,
+  sizePt: number,
+  qr: QrRenderOptions = {},
+): Promise<{ svg: string; branding: QrBrandingInfo }> {
+  if (!url) throw new ValidPayError("invalid_argument", "url is required");
+  if (!(sizePt > 0)) {
+    throw new ValidPayError("invalid_argument", "sizePt must be > 0");
+  }
+  const qrcode = await loadQrcode();
+  const { svg, branding } = await buildBrandedQr(qrcode, url, sizePt, qr);
+  return { svg, branding };
 }
 
 /** One page's media-box size, in points. */
@@ -345,33 +396,199 @@ export async function readPdfPageSizes(pdf: Uint8Array): Promise<PdfPageSize[]> 
 
 // ── internals ───────────────────────────────────────────────────────────────
 
-/** Decode a `data:image/png;base64,...` URL to raw bytes (Node or browser). */
-function dataUrlToBytes(dataUrl: string): Uint8Array {
-  const b64 = dataUrl.replace(/^data:[^,]*,/, "");
-  if (typeof Buffer !== "undefined") {
-    return new Uint8Array(Buffer.from(b64, "base64"));
-  }
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+const DEFAULT_DARK = "#0A0F1E";
+const DEFAULT_LIGHT = "#FFFFFF";
+
+interface BuiltQr {
+  /** The contract-path SVG: `qrcode` toString(type:'svg') output, with the
+   *  KeyHalve mark injected when branded. Source of truth for the mark's
+   *  geometry (parsed back out by {@link drawQrVector}). */
+  svg: string;
+  branding: QrBrandingInfo;
+  /** The QR module bitmap (`qrcode.create().modules`) — same library, same
+   *  payload, same EC level as the SVG, so the exact same matrix. */
+  matrix: { size: number; data: ArrayLike<number> };
+  /** Quiet-zone modules per side actually rendered. */
+  margin: number;
 }
+
+/**
+ * Build the QR for a printed edge of `sizePt` points: apply the shared
+ * branded-QR contract (Prompt 158) unless the caller explicitly overrode the
+ * EC level or quiet zone, produce the contract SVG, and grab the module
+ * matrix for vector drawing.
+ */
+async function buildBrandedQr(
+  qrcode: QrcodeModule,
+  url: string,
+  sizePt: number,
+  q: QrRenderOptions,
+): Promise<BuiltQr> {
+  const margin = q.margin ?? QR_MARGIN_MODULES;
+  const dark = q.darkColor ?? DEFAULT_DARK;
+  const light = q.lightColor ?? DEFAULT_LIGHT;
+
+  const contract = decideBrandedQr(url, sizePt / PT_PER_MM);
+  // The contract owns the decision unless the caller explicitly opted out:
+  // a custom quiet zone breaks its size math, and a non-H EC override cannot
+  // carry a center mark (the mark occludes ~EC-H-level modules).
+  let branded =
+    contract.showLogo &&
+    margin === QR_MARGIN_MODULES &&
+    (q.errorCorrectionLevel === undefined || q.errorCorrectionLevel === "H");
+  const errorCorrectionLevel = q.errorCorrectionLevel ?? contract.errorCorrectionLevel;
+
+  let svg: string = await qrcode.toString(url, {
+    type: "svg",
+    errorCorrectionLevel,
+    margin,
+    color: { dark, light },
+  });
+  if (branded) {
+    svg = injectKeyhalveMark(svg, url, dark, light);
+    // injectKeyhalveMark fails open (returns the SVG unchanged) on an
+    // unexpected SVG shape — keep `branded` honest in that case.
+    branded = svg.includes("<circle");
+  }
+  const matrix = qrcode.create(url, { errorCorrectionLevel }).modules;
+  return {
+    svg,
+    branding: { branded, errorCorrectionLevel, modulePitchMm: contract.modulePitchMm },
+    matrix,
+    margin,
+  };
+}
+
+/**
+ * Draw a built QR as native PDF vector art inside `rect`: opaque background,
+ * dark modules as merged horizontal-run rectangles, and — when branded — the
+ * KeyHalve mark, whose disc/split geometry is parsed from the contract's own
+ * injected SVG (so the mark placed here is BY CONSTRUCTION the one the other
+ * renderers show).
+ */
+function drawQrVector(
+  page: PdfLibPage,
+  rgb: PdfLibRgb,
+  rect: ResolvedQrRect,
+  built: BuiltQr,
+  q: QrRenderOptions,
+): void {
+  const darkColor = rgb(...hexToRgb01(q.darkColor ?? DEFAULT_DARK));
+  const lightColor = rgb(...hexToRgb01(q.lightColor ?? DEFAULT_LIGHT));
+  const n = built.matrix.size;
+  const cells = n + 2 * built.margin;
+  const pitch = rect.size / cells;
+
+  // Background (quiet zone included) — opaque for scanner contrast.
+  page.drawRectangle({
+    x: rect.x,
+    y: rect.y,
+    width: rect.size,
+    height: rect.size,
+    color: lightColor,
+  });
+
+  // Dark modules, horizontal runs merged into single rectangles.
+  const data = built.matrix.data;
+  for (let row = 0; row < n; row++) {
+    let col = 0;
+    while (col < n) {
+      if (!data[row * n + col]) {
+        col++;
+        continue;
+      }
+      let end = col;
+      while (end < n && data[row * n + end]) end++;
+      page.drawRectangle({
+        x: rect.x + (built.margin + col) * pitch,
+        y: rect.y + rect.size - (built.margin + row + 1) * pitch,
+        width: (end - col) * pitch,
+        height: pitch,
+        color: darkColor,
+      });
+      col = end;
+    }
+  }
+
+  if (!built.branding.branded) return;
+
+  // The KeyHalve mark: paper disc + ink split line, geometry parsed from the
+  // injected contract SVG (viewBox units = cells). SVG y grows down; PDF y
+  // grows up.
+  const circle = built.svg.match(
+    /<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"/,
+  );
+  const split = built.svg.match(
+    /<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/,
+  );
+  if (!circle || !split) return; // mark shape unexpectedly absent — QR stays scannable
+  page.drawCircle({
+    x: rect.x + parseFloat(circle[1]!) * pitch,
+    y: rect.y + rect.size - parseFloat(circle[2]!) * pitch,
+    size: parseFloat(circle[3]!) * pitch,
+    color: lightColor,
+  });
+  page.drawRectangle({
+    x: rect.x + parseFloat(split[1]!) * pitch,
+    y: rect.y + rect.size - (parseFloat(split[2]!) + parseFloat(split[4]!)) * pitch,
+    width: parseFloat(split[3]!) * pitch,
+    height: parseFloat(split[4]!) * pitch,
+    color: darkColor,
+  });
+}
+
+/** `#RGB` / `#RRGGBB` / `#RRGGBBAA` → [r, g, b] in 0..1 (alpha ignored —
+ *  QR surfaces must stay opaque). */
+function hexToRgb01(hex: string): [number, number, number] {
+  const h = hex.trim().replace(/^#/, "");
+  const six =
+    h.length === 3
+      ? h.split("").map((c) => c + c).join("")
+      : h.length === 8
+        ? h.slice(0, 6)
+        : h;
+  if (!/^[0-9a-fA-F]{6}$/.test(six)) {
+    throw new ValidPayError(
+      "invalid_argument",
+      `QR colors must be hex (#RGB or #RRGGBB) — got "${hex}"`,
+    );
+  }
+  return [
+    parseInt(six.slice(0, 2), 16) / 255,
+    parseInt(six.slice(2, 4), 16) / 255,
+    parseInt(six.slice(4, 6), 16) / 255,
+  ];
+}
+
+interface PdfLibPage {
+  getSize: () => { width: number; height: number };
+  drawRectangle: (o: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    color: unknown;
+  }) => void;
+  drawCircle: (o: { x: number; y: number; size: number; color: unknown }) => void;
+}
+
+type PdfLibRgb = (r: number, g: number, b: number) => unknown;
 
 interface PdfLibModule {
   PDFDocument: {
     load: (bytes: Uint8Array) => Promise<{
-      getPages: () => Array<{
-        getSize: () => { width: number; height: number };
-        drawImage: (img: unknown, o: { x: number; y: number; width: number; height: number }) => void;
-      }>;
-      embedPng: (bytes: Uint8Array) => Promise<unknown>;
+      getPages: () => PdfLibPage[];
       save: () => Promise<Uint8Array>;
     }>;
   };
+  rgb: PdfLibRgb;
 }
 
 interface QrcodeModule {
-  toDataURL: (text: string, opts?: unknown) => Promise<string>;
+  toString: (text: string, opts?: unknown) => Promise<string>;
+  create: (text: string, opts?: unknown) => {
+    modules: { size: number; data: ArrayLike<number> };
+  };
 }
 
 async function loadPdfLib(): Promise<PdfLibModule> {

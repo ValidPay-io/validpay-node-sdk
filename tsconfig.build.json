@@ -3,6 +3,10 @@
   "compilerOptions": {
     "rootDir": "./src"
   },
+  // src/brandedQr.ts builds via the referenced tsconfig.contract.json
+  // sub-project (see tsconfig.json for why); `tsc -b` builds it first and
+  // resolves imports of ./brandedQr.js against its emitted declarations.
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "tests", "**/*.test.ts", "src/brandedQr.ts"],
+  "references": [{ "path": "./tsconfig.contract.json" }]
 }
