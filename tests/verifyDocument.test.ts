@@ -85,7 +85,14 @@ describe("verifyIntent — document payloads (seal-at-source v0.2)", () => {
       byteSize: pdf.length,
       declaredByteSize: pdf.length,
       sha256: createHash("sha256").update(pdf).digest("hex"),
+      bytes: pdf,
     });
+    // The restore surface: document.bytes IS the decrypted artifact,
+    // byte-for-byte (what document.sha256 fingerprints).
+    expect(Buffer.compare(Buffer.from(result.document!.bytes), pdf)).toBe(0);
+    expect(createHash("sha256").update(result.document!.bytes).digest("hex")).toBe(
+      result.document!.sha256,
+    );
     // Untyped callers get the same facts through payload (snake_case).
     expect(result.payload).toEqual({
       payload_kind: "document",
