@@ -84,6 +84,14 @@ export interface VerifyUrlOptions {
    * it, so a QR built without it scans RED. Shape `/^[A-Za-z0-9_-]{8,16}$/`.
    */
   qrMac?: string;
+  /**
+   * 1-based page number the QR is stamped on — emitted as `p=`, after `t`
+   * and `m`. A DISPLAY-ONLY orientation tag for multi-page all-pages seals
+   * ("scanned from page N"); it carries NO security meaning and the verify
+   * engine ignores it entirely. Omit for single-page documents and
+   * single-page placements.
+   */
+  page?: number;
 }
 
 /** base64 → base64url. Phone QR scanners and share-sheets mangle `+`, `/`,
@@ -96,12 +104,14 @@ function toBase64Url(b64: string): string {
 /**
  * Build the canonical verify URL the QR encodes (converged shape):
  *
- *     <baseUrl>/verify/<retrievalId>[?t=<tenant>][&m=<qrMac>]#key=<base64url(key)>
+ *     <baseUrl>/verify/<retrievalId>[?t=<tenant>][&m=<qrMac>][&p=<page>]#key=<base64url(key)>
  *
- * Query params come in the order `t` then `m` and are omitted when absent —
- * with neither given the legacy bare shape is emitted byte-identically.
+ * Query params come in the order `t`, `m`, `p` and are omitted when absent —
+ * with none given the legacy bare shape is emitted byte-identically.
  * `m` is the rail-minted anti-fake QR MAC from the creation response
  * (`CreateIntentResult.qrMac`); MAC-gated documents scan RED without it.
+ * `p` is the display-only page tag of all-pages seals (never a security
+ * claim; the attested verify engine ignores it).
  *
  * The key is placed in the URL FRAGMENT (`#key=`), which browsers never send
  * to any server — so the decryption share rides along with the scan without
@@ -128,10 +138,20 @@ export function buildVerifyUrl(
   if (opts.tenant !== undefined && opts.tenant === "") {
     throw new ValidPayError("invalid_argument", "tenant must be non-empty when given");
   }
+  if (
+    opts.page !== undefined &&
+    (!Number.isInteger(opts.page) || opts.page < 1)
+  ) {
+    throw new ValidPayError(
+      "invalid_argument",
+      "page must be a positive integer (1-based page number) when given",
+    );
+  }
   const base = (opts.baseUrl ?? "https://verify.keyhalve.com").replace(/\/+$/, "");
   const params: string[] = [];
   if (opts.tenant !== undefined) params.push(`t=${encodeURIComponent(opts.tenant)}`);
   if (opts.qrMac !== undefined) params.push(`m=${encodeURIComponent(opts.qrMac)}`);
+  if (opts.page !== undefined) params.push(`p=${opts.page}`);
   const query = params.length > 0 ? `?${params.join("&")}` : "";
   return `${base}/verify/${encodeURIComponent(retrievalId)}${query}#key=${toBase64Url(key)}`;
 }
@@ -213,6 +233,9 @@ export interface EmbedQrOptions {
   /** Anti-fake QR MAC from `createEndCellIntent` (`CreateIntentResult.qrMac`) —
    *  REQUIRED for MAC-gated seals or the stamped QR scans RED. */
   qrMac?: string;
+  /** Display-only page tag (`&p=`) for all-pages seals — the 1-based page
+   *  THIS QR is stamped on. See {@link VerifyUrlOptions.page}. */
+  pageTag?: number;
   /** QR rendering tweaks. */
   qr?: QrRenderOptions;
 }
@@ -252,9 +275,10 @@ export async function embedQr(
   const qrcode = await loadQrcode();
 
   const url = buildVerifyUrl(opts.retrievalId, opts.key, {
-    baseUrl: opts.baseUrl,
-    tenant: opts.tenant,
-    qrMac: opts.qrMac,
+    ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
+    ...(opts.tenant !== undefined ? { tenant: opts.tenant } : {}),
+    ...(opts.qrMac !== undefined ? { qrMac: opts.qrMac } : {}),
+    ...(opts.pageTag !== undefined ? { page: opts.pageTag } : {}),
   });
   const q = opts.qr ?? {};
   const dataUrl: string = await qrcode.toDataURL(url, {

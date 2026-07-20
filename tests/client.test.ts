@@ -257,6 +257,7 @@ describe("ValidPayClient", () => {
     expect(result).toEqual({
       intentId: "vp_id_1",
       payload: { ssn: "111-22-3333" },
+      payloadKind: "json",
       issuer: "Acme Bank",
       issuerVerified: true,
       registeredAt: "2026-04-29T12:00:00.000Z",

@@ -25,6 +25,7 @@ export {
   type CreateIntentResult,
   type VerifyIntentOptions,
   type VerifyIntentResult,
+  type DocumentPayloadInfo,
   type TimeLockStatus,
   type RevocationResult,
   type RevocationEvent,
@@ -59,4 +60,25 @@ export {
   type SealDocumentParams,
   type SealDocumentFields,
   type SealDocumentResult,
+  type AutoQrPlacement,
 } from "./seal.js";
+export {
+  chooseClearRect,
+  SMART_PLACE_DEFAULTS,
+  type Box,
+  type SmartPlaceAnchor,
+  type SmartPlaceCandidate,
+  type SmartPlaceOptions,
+  type SmartPlaceResult,
+} from "./smartPlace.js";
+export {
+  extractPageObstacles,
+  type ObstacleBox,
+  type PdfJsModuleLike,
+  type PdfJsPageLike,
+} from "./pdfObstacles.js";
+export {
+  computeAutoPlacements,
+  type AutoPlacementOptions,
+  type AutoPlacementDecision,
+} from "./autoPlace.js";

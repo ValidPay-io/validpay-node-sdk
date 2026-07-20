@@ -49,16 +49,19 @@
   "author": "ValidPay",
   "peerDependencies": {
     "pdf-lib": ">=1.17.0",
+    "pdfjs-dist": ">=4.0.0",
     "qrcode": ">=1.5.0"
   },
   "peerDependenciesMeta": {
     "pdf-lib": { "optional": true },
+    "pdfjs-dist": { "optional": true },
     "qrcode": { "optional": true }
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/qrcode": "^1.5.5",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.7.284",
     "qrcode": "^1.5.4",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"

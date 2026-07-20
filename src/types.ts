@@ -129,9 +129,31 @@ export interface VerifyIntentOptions {
 
 export type TimeLockStatus = "valid" | "not_yet_valid" | "expired";
 
+/** What a DOCUMENT-payload verify decrypted (seal-at-source v0.2 seals carry
+ *  the raw stamped file bytes, not JSON fields). */
+export interface DocumentPayloadInfo {
+  /** The sealed file's content type as recorded at commit (e.g.
+   *  `"application/pdf"`), or null when the server didn't say. */
+  contentType: string | null;
+  /** Actual byte length of the DECRYPTED artifact. */
+  byteSize: number;
+  /** Byte length the server recorded at commit (`file_size_bytes`), or null. */
+  declaredByteSize: number | null;
+  /** SHA-256 (hex) of the decrypted bytes — the distributable artifact's own
+   *  fingerprint; compare it against a local file to confirm identity. */
+  sha256: string;
+}
+
 export interface VerifyIntentResult<T = unknown> {
   intentId: string;
   payload: T;
+  /** `"json"` for field payloads (payload = the parsed object, as always);
+   *  `"document"` for document seals — the decrypted bytes ARE the sealed
+   *  artifact, and `document` describes them (payload mirrors it in
+   *  snake_case for untyped callers). */
+  payloadKind: "json" | "document";
+  /** Present when payloadKind is `"document"`. */
+  document?: DocumentPayloadInfo;
   issuer: string;
   issuerVerified: boolean;
   registeredAt: string;
@@ -187,6 +209,12 @@ export interface RawIntentResponse {
   revoked_at?: string;
   verification_level?: "none" | "delegated" | "domain" | "business";
   delegated_by?: { platform: string; platform_level: "domain" | "business" } | null;
+  /** Present for document seals (sealDocument / dashboard wizard): content
+   *  type of the sealed file. Their decrypted payload is the raw file, not
+   *  JSON — see {@link VerifyIntentResult.payloadKind}. */
+  file_content_type?: string | null;
+  /** Present for document seals: byte length recorded at commit. */
+  file_size_bytes?: number | null;
 }
 
 export interface RawCreateIntentResponse {

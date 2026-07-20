@@ -8,6 +8,48 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Smart-place: `placement: "auto"` for `sealDocument` — automatic
+  clear-space QR placement, computed locally.** The shared contract file
+  `src/smartPlace.ts` (`chooseClearRect`) picks the QR spot from the page's
+  own content: deterministic candidate ladder (preferred corner → remaining
+  corners → bottom/top center → progressively smaller widths down to
+  `minWidthPt` → fail-open fallback at the preferred corner, flagged
+  `fallback: true`). Obstacles come from `src/pdfObstacles.ts`
+  (`extractPageObstacles`): text runs (getTextContent), images
+  (getOperatorList paint ops under the tracked CTM), and vector paths where
+  pdf.js exposes bounds; full-bleed boxes (≥ 90% page coverage) are treated
+  as background. Both files are BYTE-IDENTICAL contract copies shared with
+  validpay-mcp and validpay-website. Requires the new OPTIONAL peer
+  `pdfjs-dist` (auto only — everything else works without it; a clear
+  `missing_dependency` error names the peer). `placement` accepts
+  `"auto"` or `{ mode: "auto", page?, preferredAnchor?, qrWidthPt?,
+  marginPt?, clearancePt?, minWidthPt? }`; the result gains
+  `autoPlacement` (per-page decisions incl. `shrunk` / `fallback`). New
+  exports: `chooseClearRect`, `SMART_PLACE_DEFAULTS`, `extractPageObstacles`,
+  `computeAutoPlacements`, plus their types.
+- **Display-only page tags (`&p=`) on all-pages seals.** Multi-page
+  `allPages: true` seals stamp each page's QR with `&p=<page>` (after `?t`
+  and `&m`, before `#key=`) so a verifier can say "scanned from page N" —
+  an orientation tag only, NEVER a security claim; the attested verify
+  engine ignores it (tolerance verified against the live engine).
+  `buildVerifyUrl` gains `page`, `embedQr` gains `pageTag`, and the seal
+  result gains `pageVerifyUrls` (page → tagged URL). Single-page documents
+  and single-page placements stay untagged, byte-identical to before.
+- **Sealed page count disclosed.** `sealDocument` now records the document's
+  total page count as disclosed metadata (`metadata.page_count`; a
+  caller-supplied `page_count` field wins) so verify surfaces can pair it
+  with the `&p=` tag ("this document has N pages").
+- **Document-payload verification.** `verifyIntent` (and
+  `verifySplitKeyIntent`) now verify seal-at-source v0.2 DOCUMENT seals:
+  when the decrypted payload is not JSON and the intent carries file
+  metadata (`file_content_type` / `file_size_bytes`), the result is
+  document-shaped — `payloadKind: "document"` plus `document:
+  { contentType, byteSize, declaredByteSize, sha256 }` (sha256 of the
+  decrypted bytes, i.e. the distributable artifact's own fingerprint) —
+  instead of failing `invalid_payload`. JSON payloads are unchanged
+  (`payloadKind: "json"`); only a genuine non-JSON, non-document payload
+  still throws `invalid_payload`.
+
 - **`client.sealDocument(params)` — the ONE-CALL document seal (seal-at-source
   v0.2).** A PDF goes in (bytes or path), the sealed+stamped PDF comes out:
   the file you distribute IS the file that verifies. Orchestrates the API's
