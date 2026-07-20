@@ -44,6 +44,7 @@ export {
   buildVerifyUrl,
   resolveQrRect,
   embedQr,
+  renderBrandedQrSvg,
   readPdfPageSizes,
   MIN_RECOMMENDED_QR_PT,
   type QrAnchor,
@@ -52,9 +53,22 @@ export {
   type VerifyUrlOptions,
   type ResolvedQrRect,
   type QrRenderOptions,
+  type QrBrandingInfo,
   type EmbedQrOptions,
   type PdfPageSize,
 } from "./pdf.js";
+export {
+  decideBrandedQr,
+  modulesForPayload,
+  keyhalveMarkSvg,
+  injectKeyhalveMark,
+  QR_MARGIN_MODULES,
+  LOGO_MIN_MODULE_MM,
+  LOGO_DISC_RADIUS_FRAC,
+  LOGO_SPLIT_WIDTH_FRAC,
+  PT_PER_MM,
+  type BrandedQrDecision,
+} from "./brandedQr.js";
 export {
   DEFAULT_SEAL_PLACEMENT,
   type SealDocumentParams,

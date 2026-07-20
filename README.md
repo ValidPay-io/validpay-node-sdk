@@ -187,6 +187,25 @@ Coordinates read the way you think about a page, and are identical to what the *
 
 `{ anchor: "bottom-right", x: 36, y: 36, width: 90 }` sits 36pt in from the bottom and right edges — and stays bottom-right on any page size. Keep the QR **≥ ~72pt (1in)** so it scans reliably once printed; `embedQr` warns below that and throws if the placement runs off the page.
 
+#### The branded QR (KeyHalve mark)
+
+The stamped QR **brands itself** when the size allows it, per the shared
+branded-QR contract (`src/brandedQr.ts` — byte-identical across the console,
+the websites, and this SDK): given the payload length and the printed size, if
+every module still prints at **≥ 0.4 mm** with the center occluded (which
+forces error-correction **H**), the centered KeyHalve split-circle mark is
+drawn; below that, the QR stays **plain at EC-M** — scan reliability always
+wins over branding. No flags, no per-surface configuration; `sealDocument`
+results report the decision as `brandedQr` (`branded`, `errorCorrectionLevel`,
+`modulePitchMm`).
+
+The whole QR — modules and mark — is drawn as native **PDF vector art**
+(no raster), so it stays crisp at any print resolution. Passing an explicit
+`qr.errorCorrectionLevel` other than `"H"`, or a custom `qr.margin`, opts out
+of the contract and renders a plain QR at your settings, exactly like before.
+`renderBrandedQrSvg(url, sizePt)` exposes the same decision as an SVG string
+for previews.
+
 If you render PDFs with a different library, the two pure helpers are exported too:
 
 ```ts

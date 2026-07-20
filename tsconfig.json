@@ -18,6 +18,16 @@
     "outDir": "./dist",
     "types": ["node"]
   },
+  // src/brandedQr.ts is the Prompt 158 cross-repo branded-QR contract and
+  // must stay BYTE-IDENTICAL to the copies in keyhalve-console /
+  // validpay-website / checkbooks (sha256
+  // ea5d054af32bc4eb6c7014a510adc0fd5cb277052435d1fa6acbf339a9df392d, guarded
+  // by tests/brandedQr.test.ts). It indexes arrays/regex matches without
+  // guards, so it cannot compile under noUncheckedIndexedAccess — it lives in
+  // its own referenced sub-project (tsconfig.contract.json) with ONLY that
+  // flag relaxed; imports of ./brandedQr.js resolve to its emitted
+  // declarations. Everything else keeps full strictness.
   "include": ["src/**/*", "tests/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "src/brandedQr.ts"],
+  "references": [{ "path": "./tsconfig.contract.json" }]
 }

@@ -8,6 +8,26 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Size-adaptive branded QR (Prompt 158) — every stamped verify QR now
+  carries the centered KeyHalve split-circle mark when the printed size
+  allows it.** The shared contract file `src/brandedQr.ts` (BYTE-IDENTICAL to
+  the copies in keyhalve-console, validpay-website, and checkbooks; sha256
+  `ea5d054af32bc4eb6c7014a510adc0fd5cb277052435d1fa6acbf339a9df392d`, guarded
+  by a test) decides from payload length + printed size alone: module pitch
+  ≥ 0.4 mm → EC-H with the mark, below → plain EC-M (current behavior —
+  scan reliability always wins). `embedQr` now draws the QR as native **PDF
+  vector art** (background, modules, mark — no raster, no new dependencies;
+  `qr.renderPx` is accepted but ignored), and an explicit non-H
+  `qr.errorCorrectionLevel` or custom `qr.margin` opts out of the contract.
+  `sealDocument` results gain `brandedQr` (`branded`, `errorCorrectionLevel`,
+  `modulePitchMm`). New exports: `renderBrandedQrSvg`, `decideBrandedQr`,
+  `modulesForPayload`, `keyhalveMarkSvg`, `injectKeyhalveMark`,
+  `QR_MARGIN_MODULES`, `LOGO_MIN_MODULE_MM`, `LOGO_DISC_RADIUS_FRAC`,
+  `LOGO_SPLIT_WIDTH_FRAC`, `PT_PER_MM`, plus `QrBrandingInfo` /
+  `BrandedQrDecision` types. Build note: the contract file compiles in its own
+  referenced sub-project (`tsconfig.contract.json`) because it cannot satisfy
+  `noUncheckedIndexedAccess`; `build`/`typecheck` now go through `tsc -b`.
+
 - **Smart-place: `placement: "auto"` for `sealDocument` — automatic
   clear-space QR placement, computed locally.** The shared contract file
   `src/smartPlace.ts` (`chooseClearRect`) picks the QR spot from the page's
