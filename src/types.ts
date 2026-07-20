@@ -142,6 +142,13 @@ export interface DocumentPayloadInfo {
   /** SHA-256 (hex) of the decrypted bytes — the distributable artifact's own
    *  fingerprint; compare it against a local file to confirm identity. */
   sha256: string;
+  /** The DECRYPTED artifact itself — byte-for-byte the sealed file that was
+   *  committed at issuance (`sha256` fingerprints exactly these bytes).
+   *  Returned only after the full verify chain passed (key reconstruction,
+   *  GCM auth, commitment check), so callers can RESTORE the authentic sealed
+   *  file to disk — e.g. after a sealed copy was accidentally re-saved —
+   *  without a second fetch/decrypt. Never present on a failed verify. */
+  bytes: Uint8Array;
 }
 
 export interface VerifyIntentResult<T = unknown> {

@@ -1070,6 +1070,9 @@ function payloadFromDecrypted<T>(
       byteSize: bytes.length,
       declaredByteSize: data.file_size_bytes ?? null,
       sha256: createHash("sha256").update(bytes).digest("hex"),
+      // The verified artifact itself (payload keeps the snake_case DESCRIPTION
+      // only — the bytes ride here, for callers that restore the sealed file).
+      bytes,
     };
     return {
       payload: {
