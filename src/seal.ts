@@ -39,9 +39,15 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import {
+  chooseGrowToFit,
   computeAutoPlacements,
+  extractAutoObstacles,
+  GROW_MAX_WIDTH_PT,
+  GROW_MIN_WIDTH_PT,
+  logoTargetWidthPt,
   type AutoPlacementDecision,
   type AutoPlacementOptions,
+  type PageObstacles,
 } from "./autoPlace.js";
 import {
   commitmentHash,
@@ -102,13 +108,18 @@ export interface SealDocumentFields {
 }
 
 /**
- * Smart placement request: the QR spot is CHOSEN AUTOMATICALLY by the shared
- * smart-place contract (smartPlace.ts) from the page's own content — text,
- * images, and vector graphics become obstacles and the QR lands in clear
- * space near the preferred corner, shrinking down to `minWidthPt` before
- * falling back. Everything is computed LOCALLY (requires the optional peer
- * dependency `pdfjs-dist`); the page content never leaves the process.
- * The bare string `"auto"` is shorthand for `{ mode: "auto" }`.
+ * Smart placement request: the QR spot AND SIZE are CHOSEN AUTOMATICALLY, per
+ * page, from the page's own content — text, images, and vector graphics become
+ * obstacles (shared smart-place contract, smartPlace.ts) and the QR is sized
+ * LOGO-FIRST (Prompt 159): it grows to at least the branded-logo target for
+ * this document's verify URL (so the KeyHalve mark shows) when the clear space
+ * near the preferred corner allows, up to `maxWidthPt` (default 1.5 in) for
+ * scannability, and only shrinks toward `minWidthPt` — going plain — when the
+ * corner is cramped. Setting `qrWidthPt` OPTS OUT of grow-to-fit and pins that
+ * fixed size (legacy shrink-only ladder). Everything is computed LOCALLY
+ * (requires the optional peer dependency `pdfjs-dist`); the page content never
+ * leaves the process. The bare string `"auto"` is shorthand for
+ * `{ mode: "auto" }`.
  */
 export interface AutoQrPlacement extends AutoPlacementOptions {
   mode: "auto";
@@ -184,8 +195,11 @@ export interface SealDocumentResult {
   /** The key-free verification URL from the API response (`verifyUrlFor`
    *  shape, no `#key=` fragment). */
   verificationUrl: string;
-  /** Present when placement was auto: the smart-place decision for every
-   *  stamped page (top-left-origin pt). `shrunk` pages got a smaller QR;
+  /** Present when placement was auto: the per-page decision for every stamped
+   *  page (top-left-origin pt). Default (grow-to-fit) mode also reports, per
+   *  page, `branded` (the KeyHalve mark prints), `logoFit` (the branded target
+   *  was reached), `logoTargetPt` (that target for this page's URL), and
+   *  `modulePitchMm`. `shrunk` pages went plain to fit a cramped corner;
    *  `fallback` pages were crowded — the QR was forced onto the preferred
    *  corner at minimum size and a human should eyeball it. */
   autoPlacement?: AutoPlacementDecision[];
@@ -418,29 +432,50 @@ export async function sealDocumentWithHttp(
   // `&p=<page>` orientation marker (single-page docs stay untagged).
   const pageTagged = allPages && pageSizes.length > 1;
 
-  // ── Smart placement (LOCAL; before the reserve so a missing pdfjs-dist
-  // peer or unparseable page costs neither a reservation nor quota) ───────
+  // ── Smart placement (LOCAL; the failure-prone extraction runs BEFORE the
+  // reserve so a missing pdfjs-dist peer or unparseable page costs neither a
+  // reservation nor quota). Two auto modes:
+  //   • DEFAULT (grow-to-fit): the QR is sized LOGO-FIRST from THIS document's
+  //     verify URL — but that URL isn't known until after the reserve, so the
+  //     grow decision is DEFERRED to inside the try below; here we only extract
+  //     obstacles (the part that can fail early).
+  //   • LEGACY (caller pinned `qrWidthPt`): fixed-size shrink ladder — no URL
+  //     needed, so it is decided up-front here, exactly as before. ──────────
   let autoDecisions: AutoPlacementDecision[] | undefined;
   const placementFor = new Map<number, QrPlacement>();
+  // Grow-to-fit knobs hoisted so the deferred (post-reserve) sizing can see them.
+  const growMode = autoPlacement !== null && autoPlacement.qrWidthPt === undefined;
+  const preferredAnchor = autoPlacement?.preferredAnchor;
+  const growMarginPt = autoPlacement?.marginPt;
+  const growClearancePt = autoPlacement?.clearancePt;
+  const growMaxWidthPt = autoPlacement?.maxWidthPt ?? GROW_MAX_WIDTH_PT;
+  const growMinWidthPt = autoPlacement?.minWidthPt ?? GROW_MIN_WIDTH_PT;
+  let pageGeoms: PageObstacles[] | undefined;
   if (autoPlacement !== null) {
-    const autoOpts: AutoPlacementOptions = {};
-    if (autoPlacement.preferredAnchor !== undefined) {
-      autoOpts.preferredAnchor = autoPlacement.preferredAnchor;
-    }
-    if (autoPlacement.qrWidthPt !== undefined) autoOpts.qrWidthPt = autoPlacement.qrWidthPt;
-    if (autoPlacement.marginPt !== undefined) autoOpts.marginPt = autoPlacement.marginPt;
-    if (autoPlacement.clearancePt !== undefined) autoOpts.clearancePt = autoPlacement.clearancePt;
-    if (autoPlacement.minWidthPt !== undefined) autoOpts.minWidthPt = autoPlacement.minWidthPt;
-    autoDecisions = await computeAutoPlacements(bytes, targetPages, autoOpts);
-    for (const d of autoDecisions) {
-      placementFor.set(d.page, {
-        page: d.page,
-        anchor: "top-left",
-        x: d.x,
-        y: d.y,
-        width: d.widthPt,
-        units: "pt",
-      });
+    if (growMode) {
+      // Extract now (fail-fast, pre-reserve); size after the URL is known.
+      pageGeoms = await extractAutoObstacles(bytes, targetPages);
+    } else {
+      // Legacy fixed size: decide up-front (independent of the verify URL).
+      const autoOpts: AutoPlacementOptions = {};
+      if (autoPlacement.preferredAnchor !== undefined) {
+        autoOpts.preferredAnchor = autoPlacement.preferredAnchor;
+      }
+      if (autoPlacement.qrWidthPt !== undefined) autoOpts.qrWidthPt = autoPlacement.qrWidthPt;
+      if (autoPlacement.marginPt !== undefined) autoOpts.marginPt = autoPlacement.marginPt;
+      if (autoPlacement.clearancePt !== undefined) autoOpts.clearancePt = autoPlacement.clearancePt;
+      if (autoPlacement.minWidthPt !== undefined) autoOpts.minWidthPt = autoPlacement.minWidthPt;
+      autoDecisions = await computeAutoPlacements(bytes, targetPages, autoOpts);
+      for (const d of autoDecisions) {
+        placementFor.set(d.page, {
+          page: d.page,
+          anchor: "top-left",
+          x: d.x,
+          y: d.y,
+          width: d.widthPt,
+          units: "pt",
+        });
+      }
     }
   } else {
     for (const page of targetPages) {
@@ -482,6 +517,55 @@ export async function sealDocumentWithHttp(
       tenant,
       qrMac,
     });
+
+    // ── 3a. Deferred LOGO-AWARE grow-to-fit sizing (default auto mode) ─────
+    // Now that the real verify URL is known, size each page LOGO-FIRST from
+    // its EXACT payload length: grow to the branded target (mark shows) when
+    // clear space allows, up to maxWidthPt; shrink to plain only when cramped.
+    // Deterministic per page (each page's &p= tag can change the payload
+    // length, hence its own logo target).
+    if (growMode && pageGeoms !== undefined) {
+      autoDecisions = [];
+      for (const g of pageGeoms) {
+        const pageUrl = pageTagged
+          ? buildVerifyUrl(intentId, shareA, {
+              baseUrl: verifyBase,
+              tenant,
+              qrMac,
+              page: g.page,
+            })
+          : verifyUrl;
+        const logoTargetPt = logoTargetWidthPt(pageUrl);
+        const grown = chooseGrowToFit(g.obstacles, g.pageWidthPt, g.pageHeightPt, {
+          logoTargetPt,
+          maxWidthPt: growMaxWidthPt,
+          minWidthPt: growMinWidthPt,
+          ...(preferredAnchor !== undefined ? { preferredAnchor } : {}),
+          ...(growMarginPt !== undefined ? { marginPt: growMarginPt } : {}),
+          ...(growClearancePt !== undefined ? { clearancePt: growClearancePt } : {}),
+        });
+        // Authoritative branded verdict: the shared contract on this page's
+        // exact URL + chosen size (byte-for-byte what embedQr will draw).
+        const brand = decideBrandedQr(pageUrl, grown.widthPt / PT_PER_MM);
+        autoDecisions.push({
+          ...grown,
+          page: g.page,
+          obstacleCount: g.obstacles.length,
+          logoFit: grown.logoFit,
+          logoTargetPt,
+          branded: brand.showLogo,
+          modulePitchMm: brand.modulePitchMm,
+        });
+        placementFor.set(g.page, {
+          page: g.page,
+          anchor: "top-left",
+          x: grown.x,
+          y: grown.y,
+          width: grown.widthPt,
+          units: "pt",
+        });
+      }
+    }
 
     // ── 4. Stamp the QR into the PDF (each page's own placement; multi-page
     // all-pages seals carry the display-only `&p=` page tag per page) ─────

@@ -93,6 +93,14 @@ export {
 } from "./pdfObstacles.js";
 export {
   computeAutoPlacements,
+  extractAutoObstacles,
+  chooseGrowToFit,
+  logoTargetWidthPt,
+  GROW_MAX_WIDTH_PT,
+  GROW_MIN_WIDTH_PT,
   type AutoPlacementOptions,
   type AutoPlacementDecision,
+  type PageObstacles,
+  type GrowToFitOptions,
+  type GrowToFitResult,
 } from "./autoPlace.js";

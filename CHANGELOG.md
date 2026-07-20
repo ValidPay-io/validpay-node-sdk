@@ -8,6 +8,25 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Logo-aware, size-adaptive auto placement (Prompt 159) — `placement: "auto"`
+  now sizes the QR per page, logo-first.** Instead of always starting at a
+  fixed 72 pt (1 in) and only shrinking — which landed a hair below the
+  branded-logo threshold (~73.7 pt for a typical ValidPay URL) so the KeyHalve
+  mark almost never appeared by default — the seal flow now derives the
+  branded-logo target from *this document's* exact verify URL and grows the QR
+  to at least that size (up to 1.5 in / 108 pt) when the clear space near the
+  preferred corner allows, so the mark shows on roomy pages; it shrinks to the
+  largest plain QR that fits (down to 54 pt) only when the corner is cramped,
+  and falls back to the flagged minimum on a genuinely tiny gap. Deterministic,
+  obstacle-aware, per page (each `&p=` page tag can shift the target). The
+  decision is reported per page on `result.autoPlacement[]`
+  (`branded` / `logoFit` / `logoTargetPt` / `modulePitchMm`). The shared
+  `chooseClearRect` / `brandedQr` contract files are UNCHANGED (byte-identical
+  across repos); grow-to-fit is a new `chooseGrowToFit` built ON TOP of them,
+  probing the untouched primitive at a single width. New exports:
+  `chooseGrowToFit`, `logoTargetWidthPt`, `extractAutoObstacles`,
+  `GROW_MAX_WIDTH_PT`, `GROW_MIN_WIDTH_PT`. Passing `qrWidthPt` (or a manual
+  placement) opts out and wins, unchanged. No new dependencies.
 - **Size-adaptive branded QR (Prompt 158) — every stamped verify QR now
   carries the centered KeyHalve split-circle mark when the printed size
   allows it.** The shared contract file `src/brandedQr.ts` (BYTE-IDENTICAL to

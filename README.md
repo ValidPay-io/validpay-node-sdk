@@ -95,23 +95,31 @@ are retried once automatically.
 
 #### Smart placement — `placement: "auto"`
 
-Let the SDK pick a clear spot on the page itself. Auto placement extracts the
-page's content (text runs, images, vector graphics) LOCALLY via the optional
-peer `pdfjs-dist` (`npm i pdfjs-dist`) — the page never leaves your process —
-and runs the shared smart-place contract: preferred corner first (default
-bottom-right, 18 pt margin, 72 pt QR, 8 pt clearance), then the other
-corners, then bottom/top center, then progressively smaller sizes down to
-54 pt. If nothing is clear it falls back to the preferred corner at minimum
-size and flags it:
+Let the SDK pick a clear spot **and the right size** on the page itself. Auto
+placement extracts the page's content (text runs, images, vector graphics)
+LOCALLY via the optional peer `pdfjs-dist` (`npm i pdfjs-dist`) — the page
+never leaves your process — and runs the shared smart-place contract:
+preferred corner first (default bottom-right, 18 pt margin, 8 pt clearance),
+then the other corners, then bottom/top center.
+
+Sizing is **logo-aware and grow-to-fit** (each document is different): the QR
+grows to at least the branded-logo target for *this* document's verify URL —
+so the centered KeyHalve mark prints — whenever the clear space allows, up to
+1.5 in (108 pt) for scannability, and only shrinks toward 54 pt (going plain)
+when the corner is cramped. Roomy page → branded QR; cramped page → largest
+plain QR that fits; a genuinely tiny gap → minimum plain, flagged for review.
+Pass `qrWidthPt` to opt out and pin a fixed size (legacy shrink-only ladder),
+or `maxWidthPt` to change the growth ceiling.
 
 ```ts
 const result = await client.sealDocument({
   file: "invoice-1001.pdf",
   documentType: "invoice",
   placement: "auto", // or { mode: "auto", preferredAnchor: "top-right", page: 2 }
-  allPages: true,    // each page gets its own smart-place decision
+  allPages: true,    // each page gets its own per-page size + branding decision
 });
 for (const d of result.autoPlacement ?? []) {
+  console.log(`page ${d.page}: ${(d.widthPt / 72).toFixed(2)}in ${d.branded ? "branded" : "plain"}`);
   if (d.fallback) console.warn(`page ${d.page} is crowded — QR forced at minimum size, eyeball it`);
 }
 ```

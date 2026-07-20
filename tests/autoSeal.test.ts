@@ -128,15 +128,21 @@ describe("sealDocument placement: \"auto\" (smart-place)", () => {
       placement: "auto",
     });
 
-    // The reported decision: bottom-left, full size, honest flags.
+    // The reported decision: dodges the blocked corner to bottom-left, and —
+    // grow-to-fit — sizes UP to the 1.5in ceiling since that corner is clear,
+    // so the branded KeyHalve mark shows. Honest flags.
     expect(result.autoPlacement).toHaveLength(1);
     const d = result.autoPlacement![0]!;
     expect(d.page).toBe(1);
     expect(d.anchorTried).toBe("bottom-left");
-    expect(d.widthPt).toBe(72);
+    expect(d.widthPt).toBe(108); // grew to the 1.5in max in clear space
     expect(d.shrunk).toBe(false);
     expect(d.fallback).toBe(false);
+    expect(d.logoFit).toBe(true);
+    expect(d.branded).toBe(true);
     expect(d.obstacleCount).toBeGreaterThan(0);
+    // The canonical branded verdict agrees.
+    expect(result.brandedQr.branded).toBe(true);
 
     // The recorded qr_placement matches the decision (center-percent shape).
     const [body] = commitBodies();
@@ -144,7 +150,7 @@ describe("sealDocument placement: \"auto\" (smart-place)", () => {
     expect(qp["page"]).toBe(1);
     expect(qp["x"]).toBeCloseTo(((d.x + d.widthPt / 2) / W) * 100, 4);
     expect(qp["y"]).toBeCloseTo(((d.y + d.widthPt / 2) / H) * 100, 4);
-    expect(qp["width"]).toBe(72);
+    expect(qp["width"]).toBe(108);
 
     // Single-page seal: the stamped URL carries NO page tag.
     expect(capturedQrUrls).toHaveLength(1);
@@ -162,10 +168,12 @@ describe("sealDocument placement: \"auto\" (smart-place)", () => {
     const [body] = commitBodies();
     const qp = body!["qr_placement"] as Record<string, number>;
     expect(qp["page"]).toBe(2);
-    // Blank page → preferred corner at full size, margin 18: QR rect
-    // (522, 702)..(594, 774) → center (558, 738) from the top-left.
-    expect(qp["x"]).toBeCloseTo((558 / W) * 100, 4);
-    expect(qp["y"]).toBeCloseTo((738 / H) * 100, 4);
+    // Blank page → grow-to-fit takes the preferred bottom-right corner at the
+    // 1.5in (108pt) ceiling, margin 18: QR rect (486, 666)..(594, 774) →
+    // center (540, 720) from the top-left.
+    expect(qp["x"]).toBeCloseTo((540 / W) * 100, 4);
+    expect(qp["y"]).toBeCloseTo((720 / H) * 100, 4);
+    expect(qp["width"]).toBe(108);
   });
 
   it("auto placement options pass through (preferredAnchor)", async () => {
