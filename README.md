@@ -93,6 +93,37 @@ fail-closed — the id verifies as `not_found` until committed) and the error's
 `details` carry `reservation_id` + `qr_mac`. Network-shaped commit failures
 are retried once automatically.
 
+#### Smart placement — `placement: "auto"`
+
+Let the SDK pick a clear spot on the page itself. Auto placement extracts the
+page's content (text runs, images, vector graphics) LOCALLY via the optional
+peer `pdfjs-dist` (`npm i pdfjs-dist`) — the page never leaves your process —
+and runs the shared smart-place contract: preferred corner first (default
+bottom-right, 18 pt margin, 72 pt QR, 8 pt clearance), then the other
+corners, then bottom/top center, then progressively smaller sizes down to
+54 pt. If nothing is clear it falls back to the preferred corner at minimum
+size and flags it:
+
+```ts
+const result = await client.sealDocument({
+  file: "invoice-1001.pdf",
+  documentType: "invoice",
+  placement: "auto", // or { mode: "auto", preferredAnchor: "top-right", page: 2 }
+  allPages: true,    // each page gets its own smart-place decision
+});
+for (const d of result.autoPlacement ?? []) {
+  if (d.fallback) console.warn(`page ${d.page} is crowded — QR forced at minimum size, eyeball it`);
+}
+```
+
+The exact same algorithm (byte-identical contract file) runs in the ValidPay
+MCP server and the dashboard wizard, so every surface picks the same spot.
+
+Multi-page `allPages` seals also tag each page's QR URL with a display-only
+`&p=<page>` marker ("scanned from page N" on the verify page — an
+orientation aid, never a security claim), and every seal discloses the
+document's total page count as `metadata.page_count`.
+
 ### Building a verification URL
 
 The `retrievalId` is public; the `key` is secret. Stamp them into a URL fragment (the `#` part — fragments are never sent to the server, even by curl) so a single link both identifies the intent and decrypts it:
@@ -218,7 +249,7 @@ Same as `createIntent` for up to 100 intents in a single request. Each item gets
 
 #### `client.verifyIntent<T>(retrievalId, key) → VerifyIntentResult<T>`
 
-Fetches the intent and decrypts the payload locally. Verifies the commitment hash. Throws `ValidPayError`:
+Fetches the intent and decrypts the payload locally. Verifies the commitment hash. Handles BOTH payload kinds: JSON field payloads parse as before (`payloadKind: "json"`), and seal-at-source v0.2 **document seals** (`sealDocument` / the dashboard wizard — the decrypted bytes are the raw stamped file) return `payloadKind: "document"` with `document: { contentType, byteSize, declaredByteSize, sha256 }`, where `sha256` fingerprints the decrypted artifact. Throws `ValidPayError`:
 
 - `decryption_failed` — wrong key or tampered ciphertext (GCM auth-tag failure)
 - `integrity_failure` — commitment hash mismatch (server-side tampering detected)

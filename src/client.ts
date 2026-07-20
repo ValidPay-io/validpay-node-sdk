@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import {
   generateKey,
   encrypt,
   encryptBytes,
   decrypt,
+  decryptBytes,
   commitmentHash,
   buildAad,
   splitKey as splitKeyFn,
@@ -35,6 +37,7 @@ import {
   type CreateIntentResult,
   type VerifyIntentOptions,
   type VerifyIntentResult,
+  type DocumentPayloadInfo,
   type TimeLockStatus,
   type RevocationResult,
   type RevocationEvent,
@@ -488,21 +491,23 @@ export class ValidPayClient {
       decryptionKey = combineKeyShares(key, await this.fetchFragmentB(retrievalId));
     }
 
-    // M-5: reconstruct the AAD for v2 intents.
-    const decrypted = decrypt(data.encrypted_payload, decryptionKey, aadFor(data));
+    // M-5: reconstruct the AAD for v2 intents. Decrypt to BYTES first —
+    // seal-at-source v0.2 document seals carry the raw stamped PDF, not a
+    // JSON field payload (payloadFromDecrypted tells them apart).
+    const decryptedBytes = decryptBytes(
+      data.encrypted_payload,
+      decryptionKey,
+      aadFor(data),
+    );
 
     const integrityVerified = checkCommitment(data);
 
-    let payload: T;
-    try {
-      payload = JSON.parse(decrypted) as T;
-    } catch (cause) {
-      throw new ValidPayError("invalid_payload", "Decrypted payload is not valid JSON", {
-        cause,
-      });
-    }
+    const { payload, payloadKind, document } = payloadFromDecrypted<T>(
+      data,
+      decryptedBytes,
+    );
 
-    return buildVerifyResult<T>(data, payload, integrityVerified);
+    return buildVerifyResult<T>(data, payload, integrityVerified, payloadKind, document);
   }
 
   // === Split-key (Patent C) ===
@@ -597,21 +602,18 @@ export class ValidPayClient {
     }
 
     const fullKey = combineKeyShares(shareA, await this.fetchFragmentB(retrievalId));
-    // M-5: reconstruct the AAD for v2 intents.
-    const decrypted = decrypt(data.encrypted_payload, fullKey, aadFor(data));
+    // M-5: reconstruct the AAD for v2 intents. Bytes-first for the same
+    // document-payload reason as verifyIntent.
+    const decryptedBytes = decryptBytes(data.encrypted_payload, fullKey, aadFor(data));
 
     const integrityVerified = checkCommitment(data);
 
-    let payload: T;
-    try {
-      payload = JSON.parse(decrypted) as T;
-    } catch (cause) {
-      throw new ValidPayError("invalid_payload", "Decrypted payload is not valid JSON", {
-        cause,
-      });
-    }
+    const { payload, payloadKind, document } = payloadFromDecrypted<T>(
+      data,
+      decryptedBytes,
+    );
 
-    return buildVerifyResult<T>(data, payload, integrityVerified);
+    return buildVerifyResult<T>(data, payload, integrityVerified, payloadKind, document);
   }
 
   // === Selective disclosure (Patent E) ===
@@ -1032,14 +1034,68 @@ function validateTimeLock(validFrom: string | undefined, validUntil: string | un
   }
 }
 
+/**
+ * Interpret decrypted plaintext bytes (seal-at-source v0.2). JSON payloads
+ * (createIntent / createFileIntent envelopes) parse as before. Document
+ * seals (`client.sealDocument` / the dashboard wizard) carry the RAW stamped
+ * file bytes — not JSON — and the intent response advertises file metadata
+ * (`file_content_type` / `file_size_bytes`), so a failed JSON parse WITH
+ * file metadata present is a document payload: return a document-shaped
+ * result (content type, byte size, sha256 of the decrypted bytes — the
+ * distributable artifact's own hash). Only a genuine non-JSON, non-document
+ * payload still throws `invalid_payload`.
+ */
+function payloadFromDecrypted<T>(
+  data: RawIntentResponse,
+  bytes: Buffer,
+): {
+  payload: T;
+  payloadKind: "json" | "document";
+  document?: DocumentPayloadInfo;
+} {
+  const text = bytes.toString("utf8");
+  try {
+    return { payload: JSON.parse(text) as T, payloadKind: "json" };
+  } catch (cause) {
+    const hasFileMetadata =
+      typeof data.file_content_type === "string" ||
+      typeof data.file_size_bytes === "number";
+    if (!hasFileMetadata) {
+      throw new ValidPayError("invalid_payload", "Decrypted payload is not valid JSON", {
+        cause,
+      });
+    }
+    const document: DocumentPayloadInfo = {
+      contentType: data.file_content_type ?? null,
+      byteSize: bytes.length,
+      declaredByteSize: data.file_size_bytes ?? null,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+    return {
+      payload: {
+        payload_kind: "document",
+        content_type: document.contentType,
+        byte_size: document.byteSize,
+        sha256: document.sha256,
+      } as unknown as T,
+      payloadKind: "document",
+      document,
+    };
+  }
+}
+
 function buildVerifyResult<T>(
   data: RawIntentResponse,
   payload: T,
   integrityVerified: boolean,
+  payloadKind: "json" | "document" = "json",
+  document?: DocumentPayloadInfo,
 ): VerifyIntentResult<T> {
   return {
     intentId: data.intent_id,
     payload,
+    payloadKind,
+    ...(document !== undefined ? { document } : {}),
     issuer: data.issuer,
     issuerVerified: data.issuer_verified,
     registeredAt: data.registered_at,

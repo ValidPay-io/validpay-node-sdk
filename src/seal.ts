@@ -39,6 +39,11 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import {
+  computeAutoPlacements,
+  type AutoPlacementDecision,
+  type AutoPlacementOptions,
+} from "./autoPlace.js";
+import {
   commitmentHash,
   encryptBytes,
   generateKey,
@@ -49,6 +54,7 @@ import {
   embedQr,
   readPdfPageSizes,
   resolveQrRect,
+  type QrAnchor,
   type QrPlacement,
 } from "./pdf.js";
 import { ValidPayError } from "./types.js";
@@ -94,6 +100,23 @@ export interface SealDocumentFields {
   [field: string]: unknown;
 }
 
+/**
+ * Smart placement request: the QR spot is CHOSEN AUTOMATICALLY by the shared
+ * smart-place contract (smartPlace.ts) from the page's own content — text,
+ * images, and vector graphics become obstacles and the QR lands in clear
+ * space near the preferred corner, shrinking down to `minWidthPt` before
+ * falling back. Everything is computed LOCALLY (requires the optional peer
+ * dependency `pdfjs-dist`); the page content never leaves the process.
+ * The bare string `"auto"` is shorthand for `{ mode: "auto" }`.
+ */
+export interface AutoQrPlacement extends AutoPlacementOptions {
+  mode: "auto";
+  /** 1-based page the QR goes on (ignored with `allPages`). Default `1`. */
+  page?: number;
+  /** Corner tried first — inherited from the smart-place contract. */
+  preferredAnchor?: QrAnchor;
+}
+
 export interface SealDocumentParams {
   /** The PDF to seal: raw bytes, or a filesystem path to read. PDF only in
    *  v0.2 (`embedQr` stamps via pdf-lib) — anything else throws
@@ -105,15 +128,20 @@ export interface SealDocumentParams {
   /** Plaintext fields disclosed to verifiers (see {@link SealDocumentFields}). */
   fields?: SealDocumentFields;
   /**
-   * Where the QR is stamped — the canonical {@link QrPlacement} contract
-   * (page / anchor / x / y / width / units) shared with `embedQr` and the
-   * website tool. Default: {@link DEFAULT_SEAL_PLACEMENT} (1.0 in QR,
-   * bottom-right, 0.5 in inset).
+   * Where the QR is stamped — either the canonical {@link QrPlacement}
+   * contract (page / anchor / x / y / width / units) shared with `embedQr`
+   * and the website tool, or `"auto"` / {@link AutoQrPlacement} to let the
+   * shared smart-place contract choose clear space on the page itself
+   * (locally, via the optional peer `pdfjs-dist`). Default:
+   * {@link DEFAULT_SEAL_PLACEMENT} (1.0 in QR, bottom-right, 0.5 in inset).
    */
-  placement?: QrPlacement;
-  /** Stamp the QR on EVERY page (like the wizard's "all pages" toggle) at the
-   *  placement's anchor/insets; `placement.page` is ignored and page 1 is
-   *  recorded as the canonical placement. Default `false`. */
+  placement?: QrPlacement | "auto" | AutoQrPlacement;
+  /** Stamp the QR on EVERY page (like the wizard's "all pages" toggle); page
+   *  1 is recorded as the canonical placement. With a manual placement its
+   *  `page` is ignored and every page uses the same insets; with auto
+   *  placement each page gets its own smart-place decision. On multi-page
+   *  documents each page's QR URL additionally carries the display-only
+   *  `&p=<page>` orientation tag. Default `false`. */
   allPages?: boolean;
   /**
    * NOT SUPPORTED in v0.2: the reserve→commit contract records `valid_until`
@@ -155,6 +183,16 @@ export interface SealDocumentResult {
   /** The key-free verification URL from the API response (`verifyUrlFor`
    *  shape, no `#key=` fragment). */
   verificationUrl: string;
+  /** Present when placement was auto: the smart-place decision for every
+   *  stamped page (top-left-origin pt). `shrunk` pages got a smaller QR;
+   *  `fallback` pages were crowded — the QR was forced onto the preferred
+   *  corner at minimum size and a human should eyeball it. */
+  autoPlacement?: AutoPlacementDecision[];
+  /** Present for multi-page all-pages seals: the page-tagged verify URL each
+   *  page's QR encodes (`&p=<page>` — a display-only orientation tag, never
+   *  a security claim). Every entry CONTAINS THE DECRYPTION KEY in its
+   *  `#key=` fragment — treat like {@link verifyUrl}. */
+  pageVerifyUrls?: Array<{ page: number; url: string }>;
 }
 
 /** The narrow HTTP seam `ValidPayClient` provides — its authenticated
@@ -318,8 +356,18 @@ export async function sealDocumentWithHttp(
     );
   }
 
-  const placement = params.placement ?? DEFAULT_SEAL_PLACEMENT;
-  if (!(placement.width > 0)) {
+  const rawPlacement = params.placement ?? DEFAULT_SEAL_PLACEMENT;
+  const autoPlacement: AutoQrPlacement | null =
+    rawPlacement === "auto"
+      ? { mode: "auto" }
+      : typeof rawPlacement === "object" &&
+          "mode" in rawPlacement &&
+          rawPlacement.mode === "auto"
+        ? rawPlacement
+        : null;
+  const manualPlacement =
+    autoPlacement === null ? (rawPlacement as QrPlacement) : null;
+  if (manualPlacement !== null && !(manualPlacement.width > 0)) {
     throw new ValidPayError("invalid_argument", "placement.width must be > 0");
   }
   const allPages = params.allPages ?? false;
@@ -341,12 +389,51 @@ export async function sealDocumentWithHttp(
   }
   // Canonical placement page: 1 when stamping every page (the wizard's rule),
   // else the requested page.
-  const canonicalPage = allPages ? 1 : (placement.page ?? 1);
+  const canonicalPage = allPages
+    ? 1
+    : ((autoPlacement !== null ? autoPlacement.page : manualPlacement?.page) ?? 1);
   if (canonicalPage < 1 || canonicalPage > pageSizes.length) {
     throw new ValidPayError(
       "invalid_argument",
       `placement.page ${canonicalPage} is out of range (document has ${pageSizes.length} page(s))`,
     );
+  }
+
+  const targetPages = allPages
+    ? Array.from({ length: pageSizes.length }, (_, i) => i + 1)
+    : [canonicalPage];
+  // Multi-page all-pages seals tag each page's QR URL with the display-only
+  // `&p=<page>` orientation marker (single-page docs stay untagged).
+  const pageTagged = allPages && pageSizes.length > 1;
+
+  // ── Smart placement (LOCAL; before the reserve so a missing pdfjs-dist
+  // peer or unparseable page costs neither a reservation nor quota) ───────
+  let autoDecisions: AutoPlacementDecision[] | undefined;
+  const placementFor = new Map<number, QrPlacement>();
+  if (autoPlacement !== null) {
+    const autoOpts: AutoPlacementOptions = {};
+    if (autoPlacement.preferredAnchor !== undefined) {
+      autoOpts.preferredAnchor = autoPlacement.preferredAnchor;
+    }
+    if (autoPlacement.qrWidthPt !== undefined) autoOpts.qrWidthPt = autoPlacement.qrWidthPt;
+    if (autoPlacement.marginPt !== undefined) autoOpts.marginPt = autoPlacement.marginPt;
+    if (autoPlacement.clearancePt !== undefined) autoOpts.clearancePt = autoPlacement.clearancePt;
+    if (autoPlacement.minWidthPt !== undefined) autoOpts.minWidthPt = autoPlacement.minWidthPt;
+    autoDecisions = await computeAutoPlacements(bytes, targetPages, autoOpts);
+    for (const d of autoDecisions) {
+      placementFor.set(d.page, {
+        page: d.page,
+        anchor: "top-left",
+        x: d.x,
+        y: d.y,
+        width: d.widthPt,
+        units: "pt",
+      });
+    }
+  } else {
+    for (const page of targetPages) {
+      placementFor.set(page, { ...(manualPlacement as QrPlacement), page });
+    }
   }
 
   // ── 1. Reserve the identity ─────────────────────────────────────────────
@@ -384,27 +471,27 @@ export async function sealDocumentWithHttp(
       qrMac,
     });
 
-    // ── 4. Stamp the QR into the PDF ──────────────────────────────────────
-    const targetPages = allPages
-      ? Array.from({ length: pageSizes.length }, (_, i) => i + 1)
-      : [canonicalPage];
+    // ── 4. Stamp the QR into the PDF (each page's own placement; multi-page
+    // all-pages seals carry the display-only `&p=` page tag per page) ─────
     let stamped: Uint8Array = bytes;
     for (const page of targetPages) {
       stamped = await embedQr(stamped, {
         retrievalId: intentId,
         key: shareA,
-        placement: { ...placement, page },
+        placement: placementFor.get(page)!,
         baseUrl: verifyBase,
         tenant,
         qrMac,
+        ...(pageTagged ? { pageTag: page } : {}),
       });
     }
 
     // ── 5. Record WHERE the authentic QR lives, in the commit contract's
     // shape: center-of-QR percentages from the page's top-left + width in
-    // points — the wizard's exact convention. ─────────────────────────────
+    // points — the wizard's exact convention. With auto placement this is
+    // the QR-bearing (canonical) page's own smart-place decision. ─────────
     const { width: pw, height: ph } = pageSizes[canonicalPage - 1]!;
-    const rect = resolveQrRect({ ...placement, page: canonicalPage }, pw, ph);
+    const rect = resolveQrRect(placementFor.get(canonicalPage)!, pw, ph);
     const qrPlacement = {
       page: canonicalPage,
       x: clampPct(((rect.x + rect.size / 2) / pw) * 100),
@@ -423,6 +510,12 @@ export async function sealDocumentWithHttp(
     const metadata: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(extraFields)) {
       if (v !== undefined) metadata[k] = v;
+    }
+    // Sealed page count: disclosed so verifiers can see how many pages the
+    // sealed artifact has (the verify page pairs it with the QR's `&p=`
+    // orientation tag). A caller-supplied page_count field wins.
+    if (metadata["page_count"] === undefined) {
+      metadata["page_count"] = pageSizes.length;
     }
     const body: Record<string, unknown> = {
       intent_id: intentId,
@@ -490,6 +583,20 @@ export async function sealDocumentWithHttp(
         data.verification_url ??
         reserve.verification_url ??
         `${verifyBase}/verify/${encodeURIComponent(intentId)}?t=${encodeURIComponent(tenant)}&m=${encodeURIComponent(qrMac)}`,
+      ...(autoDecisions !== undefined ? { autoPlacement: autoDecisions } : {}),
+      ...(pageTagged
+        ? {
+            pageVerifyUrls: targetPages.map((page) => ({
+              page,
+              url: buildVerifyUrl(intentId, shareA, {
+                baseUrl: verifyBase,
+                tenant,
+                qrMac,
+                page,
+              }),
+            })),
+          }
+        : {}),
     };
   } catch (err) {
     throw sealError(err, intentId, qrMac, reserve.expires_at);

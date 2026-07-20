@@ -150,7 +150,9 @@ describe("sealDocument — one-call reserve→stamp→encrypt→commit", () => {
     expect(body!["date_issued"]).toBe("2026-07-19");
     expect(body!["expiration_date"]).toBe("2027-01-01");
     expect(body!["notes"]).toBe("net 30");
-    expect(body!["metadata"]).toEqual({ po_number: "PO-9" });
+    // page_count is always disclosed since smart-place/page-tags (P-loop):
+    // verifiers pair it with the QR's &p= orientation tag.
+    expect(body!["metadata"]).toEqual({ po_number: "PO-9", page_count: 1 });
 
     // End-Cell pieces: exactly one rail share + one platform share.
     const pieces = body!["pieces"] as Array<{ holder: string; piece: string }>;
