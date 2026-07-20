@@ -72,19 +72,25 @@ async function decodeRegion(
     canvasContext: ctx as unknown as CanvasRenderingContext2D,
     viewport,
   }).promise;
+  const jsQRmod = (await import("jsqr")) as unknown as {
+    default: (d: Uint8ClampedArray, w: number, h: number) => { data: string } | null;
+  };
+  const jsQR = jsQRmod.default;
+  const read = (im: { data: Uint8ClampedArray; width: number; height: number }) =>
+    jsQR(im.data as unknown as Uint8ClampedArray, im.width, im.height);
+
   // Crop the QR (plus a quiet margin), clamped to the rendered page bounds.
   const pad = Math.round(10 * scale);
   const sx = Math.max(0, Math.round(xPt * scale) - pad);
   const sy = Math.max(0, Math.round(yTopPt * scale) - pad);
   const sw = Math.min(cw - sx, Math.round(sizePt * scale) + 2 * pad);
   const sh = Math.min(ch - sy, Math.round(sizePt * scale) + 2 * pad);
-  const img = ctx.getImageData(sx, sy, sw, sh);
+  let decoded = read(ctx.getImageData(sx, sy, sw, sh));
+  // Fallback for small QRs that hug the page edge (little quiet zone left in
+  // the clamped crop): decode the full rendered page, whose margins give the
+  // decoder ample surrounding light. Robust across renderers/runners.
+  if (!decoded) decoded = read(ctx.getImageData(0, 0, cw, ch));
   await doc.destroy();
-  const jsQRmod = (await import("jsqr")) as unknown as {
-    default: (d: Uint8ClampedArray, w: number, h: number) => { data: string } | null;
-  };
-  const jsQR = jsQRmod.default;
-  const decoded = jsQR(img.data as unknown as Uint8ClampedArray, img.width, img.height);
   return decoded ? decoded.data : null;
 }
 
