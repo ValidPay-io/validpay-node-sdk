@@ -259,21 +259,22 @@ describe("sealDocument — one-call reserve→stamp→encrypt→commit", () => {
     expect(body!["file_original_name"]).toBe("rent-invoice-sealed.pdf");
   });
 
-  it("rejects UNSUPPORTED types (Office docs, unknown bytes) with a clear convert-to-PDF error BEFORE any network call", async () => {
-    const { client, fetchMock } = mockApi();
-    // An Office/ZIP document (docx) → convert-to-PDF hint (images ARE now
-    // accepted; see tests/imageSeal.test.ts — this guards the still-rejected
-    // types).
-    await expect(
-      client.sealDocument({
-        file: Buffer.from("PK\x03\x04 definitely a docx"),
-        documentType: "invoice",
-      }),
-    ).rejects.toMatchObject({ code: "unsupported_file_type" });
-    await expect(
-      client.sealDocument({ file: Buffer.from("hello"), documentType: "invoice" }),
-    ).rejects.toThrow(/PDF/);
-    expect(fetchMock).not.toHaveBeenCalled();
+  it("seals NON-stampable types (Office docs, unknown bytes) via the sidecar certificate", async () => {
+    // Images ARE stamped (tests/imageSeal.test.ts); non-stampable files are
+    // sealed via a generated certificate (tests/sidecarSeal.test.ts) — no
+    // format rejection anymore, only empty input errors.
+    const { client } = mockApi();
+    const docx = await client.sealDocument({
+      file: Buffer.from("PK\x03\x04 definitely a docx"),
+      documentType: "invoice",
+      fileName: "a.docx",
+    });
+    expect(docx.sealMode).toBe("sidecar");
+    const unknown = await client.sealDocument({
+      file: Buffer.from("hello there tiny blob"),
+      documentType: "invoice",
+    });
+    expect(unknown.sealMode).toBe("sidecar");
   });
 
   it("rejects validFrom (unsupported by the v0.2 commit contract) before any network call", async () => {

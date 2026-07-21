@@ -80,11 +80,20 @@ export {
   normalizeToPdf,
   detectInputType,
   describeInputType,
+  isStampable,
+  sidecarContentType,
   pageSizeForImage,
   SUPPORTED_IMAGE_TYPES,
+  STAMPABLE_TYPES,
   SUPPORTED_TYPES_LABEL,
   type DetectedInputType,
 } from "./imageInput.js";
+export {
+  buildCertificatePdf,
+  type CertificateInfo,
+  type CertificateField,
+  type CertificateResult,
+} from "./certificate.js";
 export {
   chooseClearRect,
   SMART_PLACE_DEFAULTS,
