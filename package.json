@@ -50,12 +50,14 @@
   "peerDependencies": {
     "pdf-lib": ">=1.17.0",
     "pdfjs-dist": ">=4.0.0",
-    "qrcode": ">=1.5.0"
+    "qrcode": ">=1.5.0",
+    "sharp": ">=0.33.0"
   },
   "peerDependenciesMeta": {
     "pdf-lib": { "optional": true },
     "pdfjs-dist": { "optional": true },
-    "qrcode": { "optional": true }
+    "qrcode": { "optional": true },
+    "sharp": { "optional": true }
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
@@ -64,6 +66,7 @@
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.7.284",
     "qrcode": "^1.5.4",
+    "sharp": "^0.34.4",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   }

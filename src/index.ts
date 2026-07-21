@@ -77,6 +77,15 @@ export {
   type AutoQrPlacement,
 } from "./seal.js";
 export {
+  normalizeToPdf,
+  detectInputType,
+  describeInputType,
+  pageSizeForImage,
+  SUPPORTED_IMAGE_TYPES,
+  SUPPORTED_TYPES_LABEL,
+  type DetectedInputType,
+} from "./imageInput.js";
+export {
   chooseClearRect,
   SMART_PLACE_DEFAULTS,
   type Box,

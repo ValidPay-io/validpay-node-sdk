@@ -259,8 +259,11 @@ describe("sealDocument — one-call reserve→stamp→encrypt→commit", () => {
     expect(body!["file_original_name"]).toBe("rent-invoice-sealed.pdf");
   });
 
-  it("rejects non-PDF bytes with a clear PDF-only error BEFORE any network call", async () => {
+  it("rejects UNSUPPORTED types (Office docs, unknown bytes) with a clear convert-to-PDF error BEFORE any network call", async () => {
     const { client, fetchMock } = mockApi();
+    // An Office/ZIP document (docx) → convert-to-PDF hint (images ARE now
+    // accepted; see tests/imageSeal.test.ts — this guards the still-rejected
+    // types).
     await expect(
       client.sealDocument({
         file: Buffer.from("PK\x03\x04 definitely a docx"),

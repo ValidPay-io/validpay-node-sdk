@@ -1,9 +1,12 @@
 /**
  * ONE-CALL document seal — seal-at-source v0.2, phase 2 (SDK half).
  *
- * `client.sealDocument({ file, documentType, fields })`: a PDF goes in, the
- * sealed+stamped PDF comes out. One artifact — the file you distribute IS the
- * file that verifies. Orchestrates the API's reserve→commit pair
+ * `client.sealDocument({ file, documentType, fields })`: a PDF OR an image
+ * goes in, the sealed+stamped PDF comes out. One artifact — the file you
+ * distribute IS the file that verifies. An image is first normalized in memory
+ * into a single-page PDF (its one page IS the image; see imageInput.ts), so the
+ * whole orchestration below is byte-for-byte the PDF path and verify/KeyHalve
+ * need zero changes. Orchestrates the API's reserve→commit pair
  * (ValidPay-API #145, `POST /v1/intent/reserve` + `POST /v1/intent/commit`)
  * with ALL cryptography local:
  *
@@ -64,6 +67,7 @@ import {
   type QrPlacement,
 } from "./pdf.js";
 import { decideBrandedQr, PT_PER_MM } from "./brandedQr.js";
+import { normalizeToPdf, SUPPORTED_TYPES_LABEL } from "./imageInput.js";
 import { ValidPayError } from "./types.js";
 
 /** Verify-page origin the QR URL is built against when none is given —
@@ -130,9 +134,12 @@ export interface AutoQrPlacement extends AutoPlacementOptions {
 }
 
 export interface SealDocumentParams {
-  /** The PDF to seal: raw bytes, or a filesystem path to read. PDF only in
-   *  v0.2 (`embedQr` stamps via pdf-lib) — anything else throws
-   *  `unsupported_file_type`. */
+  /** The document to seal: raw bytes, or a filesystem path to read. A PDF is
+   *  sealed directly; an IMAGE ({@link SUPPORTED_TYPES_LABEL}) is normalized in
+   *  memory into a single-page PDF first and then sealed as a normal PDF. Type
+   *  is detected by magic bytes, not the extension. HEIC, Office documents, and
+   *  unrecognized bytes throw `unsupported_file_type` (for Word/Excel, convert
+   *  to PDF first). WebP/TIFF/GIF need the optional `sharp` peer. */
   file: Uint8Array | string;
   /** Document type, e.g. `"invoice"`, `"check"`, `"lease"`. Some sensitive
    *  types (M-1) require a verified issuer account. */
@@ -256,20 +263,6 @@ const NON_RETRIABLE_COMMIT_ERRORS = new Set([
 
 const clampPct = (v: number): number => Math.min(100, Math.max(0, v));
 
-/** PDF magic sniff: `%PDF-` within the first 1 KB (the spec tolerates a
- *  small preamble before the header, and pdf-lib does too). */
-function looksLikePdf(bytes: Uint8Array): boolean {
-  const head = bytes.subarray(0, 1024);
-  const marker = [0x25, 0x50, 0x44, 0x46, 0x2d]; // %PDF-
-  outer: for (let i = 0; i + marker.length <= head.length; i++) {
-    for (let j = 0; j < marker.length; j++) {
-      if (head[i + j] !== marker[j]) continue outer;
-    }
-    return true;
-  }
-  return false;
-}
-
 async function loadFileBytes(file: Uint8Array | string): Promise<Uint8Array> {
   if (file instanceof Uint8Array) {
     if (file.length === 0) {
@@ -372,15 +365,15 @@ export async function sealDocumentWithHttp(
     validUntilIso = new Date(t).toISOString();
   }
 
-  const bytes = await loadFileBytes(params.file);
-  if (!looksLikePdf(bytes)) {
-    throw new ValidPayError(
-      "unsupported_file_type",
-      "sealDocument seals PDFs only in v0.2 (the QR is stamped via pdf-lib). " +
-        "The input does not look like a PDF — convert it, or seal images/DOCX " +
-        "through the dashboard wizard / createFileIntent.",
-    );
-  }
+  // Accept PDFs AND images: an image input is normalized IN MEMORY into a
+  // single-page PDF (its one page IS the image), then the seal pipeline below
+  // runs unchanged — the sealed artifact is a normal sealed PDF, so verify /
+  // KeyHalve need zero changes. Detection is by MAGIC BYTES, not the filename.
+  // Native (zero extra dep): PDF passthrough, PNG, JPEG. Via the optional
+  // `sharp` peer: WebP, TIFF, GIF (first frame). HEIC/Office/unknown throw a
+  // clear unsupported_file_type. All in memory — no temp files.
+  const rawBytes = await loadFileBytes(params.file);
+  const bytes = await normalizeToPdf(rawBytes);
 
   const rawPlacement = params.placement ?? DEFAULT_SEAL_PLACEMENT;
   const autoPlacement: AutoQrPlacement | null =
@@ -409,7 +402,8 @@ export async function sealDocumentWithHttp(
     if (cause instanceof ValidPayError && cause.code === "missing_dependency") throw cause;
     throw new ValidPayError(
       "unsupported_file_type",
-      "The file could not be parsed as a PDF (sealDocument is PDF-only in v0.2).",
+      `The document could not be parsed as a PDF after normalization ` +
+        `(supported: ${SUPPORTED_TYPES_LABEL}; for Word/Excel, convert to PDF first).`,
       { cause },
     );
   }
