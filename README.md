@@ -61,10 +61,13 @@ console.log(result.issuerVerified);      // true
 File in, sealed+stamped PDF out. `sealDocument` runs the reserve→commit flow
 against the ValidPay API so the QR is stamped INTO the document **before** it
 is encrypted — the sealed artifact and the distributed artifact are the same
-file. All crypto is local: the AES-256 key is End-Cell split (QR + KeyHalve
-rail + platform), and neither the key nor the plaintext ever leaves your
-process. Requires an account-linked API key with `intent:create` plus the
-optional peer deps `pdf-lib` and `qrcode`.
+file. A PDF is sealed directly; an **image** (PNG, JPEG, WebP, TIFF, GIF) is
+normalized in memory into a single-page PDF first, then sealed as a normal PDF
+— type is detected by magic bytes, not the extension (for Word/Excel, convert
+to PDF first). All crypto is local: the AES-256 key is End-Cell split (QR +
+KeyHalve rail + platform), and neither the key nor the plaintext ever leaves
+your process. Requires an account-linked API key with `intent:create` plus the
+optional peer deps `pdf-lib` and `qrcode` (and `sharp`, only for WebP/TIFF/GIF).
 
 ```ts
 import { ValidPayClient } from "@validpay/node-sdk";
@@ -73,7 +76,7 @@ import { writeFile } from "node:fs/promises";
 const client = new ValidPayClient({ apiKey: process.env.VALIDPAY_API_KEY! });
 
 const result = await client.sealDocument({
-  file: "invoice-1001.pdf",              // bytes or a path; PDF only in v0.2
+  file: "invoice-1001.pdf",              // bytes or a path; PDF or an image (PNG/JPEG/WebP/TIFF/GIF)
   documentType: "invoice",
   fields: { reference: "INV-1001", notes: "net 30" }, // disclosed plaintext
   // placement default: 1.0in QR, bottom-right, 0.5in inset. Or:
