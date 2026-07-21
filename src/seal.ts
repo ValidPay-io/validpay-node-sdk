@@ -67,7 +67,13 @@ import {
   type QrPlacement,
 } from "./pdf.js";
 import { decideBrandedQr, PT_PER_MM } from "./brandedQr.js";
-import { normalizeToPdf, SUPPORTED_TYPES_LABEL } from "./imageInput.js";
+import {
+  isStampable,
+  normalizeToPdf,
+  sidecarContentType,
+  SUPPORTED_TYPES_LABEL,
+} from "./imageInput.js";
+import { buildCertificatePdf, type CertificateField } from "./certificate.js";
 import { ValidPayError } from "./types.js";
 
 /** Verify-page origin the QR URL is built against when none is given —
@@ -134,12 +140,16 @@ export interface AutoQrPlacement extends AutoPlacementOptions {
 }
 
 export interface SealDocumentParams {
-  /** The document to seal: raw bytes, or a filesystem path to read. A PDF is
-   *  sealed directly; an IMAGE ({@link SUPPORTED_TYPES_LABEL}) is normalized in
-   *  memory into a single-page PDF first and then sealed as a normal PDF. Type
-   *  is detected by magic bytes, not the extension. HEIC, Office documents, and
-   *  unrecognized bytes throw `unsupported_file_type` (for Word/Excel, convert
-   *  to PDF first). WebP/TIFF/GIF need the optional `sharp` peer. */
+  /** The document to seal: raw bytes, or a filesystem path to read. Routed by
+   *  magic bytes, not the extension:
+   *    • PDF → sealed directly (QR stamped in).
+   *    • image ({@link SUPPORTED_TYPES_LABEL} minus PDF) → normalized in memory
+   *      into a single-page PDF, then sealed as a normal PDF (WebP/TIFF/GIF need
+   *      the optional `sharp` peer).
+   *    • anything else (Word/Excel/PowerPoint, arbitrary binary) → SIDECAR: the
+   *      original is encrypted as-is and a certificate PDF carries the QR (see
+   *      {@link SealDocumentResult.sealMode}). No conversion, no rejection.
+   *  Only empty input errors. */
   file: Uint8Array | string;
   /** Document type, e.g. `"invoice"`, `"check"`, `"lease"`. Some sensitive
    *  types (M-1) require a verified issuer account. */
@@ -183,12 +193,29 @@ export interface SealDocumentParams {
    *  responsibility per Terms §6). Default `true` — calling this method IS
    *  the issuing act; pass `false` only if your integration certifies later. */
   issuerCertified?: boolean;
+  /** Issuing organization display name, printed on the SIDECAR certificate
+   *  ("Issued by …") for non-stampable files. Ignored for PDFs/images. */
+  issuerName?: string;
 }
 
 export interface SealDocumentResult {
-  /** THE artifact: the stamped PDF whose encrypted bytes were committed.
-   *  Distribute exactly this file — its QR verifies it. */
+  /** The QR-carrying PDF. In `"stamped"` mode this IS the sealed artifact —
+   *  the stamped PDF whose encrypted bytes were committed; distribute exactly
+   *  this file and its QR verifies it. In `"sidecar"` mode this is the
+   *  generated CERTIFICATE PDF (the original could not be stamped); distribute
+   *  it ALONGSIDE {@link originalFile} — scanning its QR decrypts to the
+   *  untouched original. */
   sealedPdf: Buffer;
+  /** How the QR was delivered: `"stamped"` (QR stamped into a PDF/image) or
+   *  `"sidecar"` (a separate certificate PDF for a non-stampable original). */
+  sealMode: "stamped" | "sidecar";
+  /** SIDECAR mode only: the UNTOUCHED original bytes (byte-identical to the
+   *  input) that were encrypted + committed. Hand these out together with
+   *  {@link sealedPdf} (the certificate). Absent in stamped mode. */
+  originalFile?: Buffer;
+  /** SIDECAR mode only: the original's recorded `file_content_type` (verify
+   *  offers the original for download after the scan decrypts it). */
+  originalContentType?: string;
   /** The intent id (`vp_…`). */
   intentId: string;
   /** The pre-issued anti-fake QR MAC riding the verify URL as `?m=`. */
@@ -332,6 +359,171 @@ function sealError(
 }
 
 /**
+ * POST the commit body with ONE automatic retry on a network-shaped failure.
+ * The lost-response case (first commit landed, response never arrived) is
+ * recovered as success when the retry answers `already_committed`. Shared by
+ * the stamped and sidecar paths so the failure contract is identical.
+ */
+async function commitWithRetry(
+  http: SealHttp,
+  body: Record<string, unknown>,
+  intentId: string,
+  reserveVerificationUrl: string | undefined,
+): Promise<RawCommitResponse> {
+  try {
+    return await http.request<RawCommitResponse>("POST", "/v1/intent/commit", {
+      body,
+      auth: true,
+    });
+  } catch (err) {
+    if (!(err instanceof ValidPayError) || err.code !== "network_error") throw err;
+    try {
+      return await http.request<RawCommitResponse>("POST", "/v1/intent/commit", {
+        body,
+        auth: true,
+      });
+    } catch (retryErr) {
+      if (retryErr instanceof ValidPayError && retryErr.code === "already_committed") {
+        return {
+          retrieval_id: intentId,
+          ...(reserveVerificationUrl !== undefined
+            ? { verification_url: reserveVerificationUrl }
+            : {}),
+        };
+      }
+      throw retryErr;
+    }
+  }
+}
+
+/**
+ * SIDECAR seal for a NON-stampable original (Office docs, arbitrary binaries).
+ * The ORIGINAL bytes are encrypted + committed unchanged; a SEPARATE
+ * certificate PDF carries the branded verify QR + a human-readable summary.
+ * Scanning the certificate's QR decrypts the stored ciphertext — the untouched
+ * original — the same scan→decrypt→view flow as a stamped PDF. All in memory.
+ */
+async function sealSidecarWithHttp(
+  http: SealHttp,
+  params: SealDocumentParams,
+  rawBytes: Uint8Array,
+  validUntilIso: string | undefined,
+): Promise<SealDocumentResult> {
+  const tenant = params.tenant ?? DEFAULT_TENANT;
+  const verifyBase = (params.verifyBaseUrl ?? DEFAULT_VERIFY_BASE_URL).replace(/\/+$/, "");
+  const fileName =
+    params.fileName ??
+    (typeof params.file === "string" ? basename(params.file) : "document");
+  const contentType = sidecarContentType(fileName);
+
+  // ── 1. Reserve ──────────────────────────────────────────────────────────
+  const reserve = await http.request<RawReserveResponse>("POST", "/v1/intent/reserve", {
+    body: {},
+    auth: true,
+  });
+  if (!reserve?.intent_id || !reserve.qr_mac) {
+    throw new ValidPayError("invalid_response", "Reserve response missing intent_id/qr_mac", {
+      details: reserve,
+    });
+  }
+  const intentId = reserve.intent_id;
+  const qrMac = reserve.qr_mac;
+
+  try {
+    // ── 2. Key + End-Cell split (identical custody to the stamped path) ────
+    const fullKey = generateKey();
+    const parts = splitKeyPieces(fullKey, 2);
+    const shareA = parts[0]!;
+    const pieces = [
+      { holder: "keyhalve", piece: parts[1]! },
+      { holder: "platform", piece: parts[2]! },
+    ];
+
+    // ── 3. Converged verify URL the certificate QR encodes ────────────────
+    const verifyUrl = buildVerifyUrl(intentId, shareA, { baseUrl: verifyBase, tenant, qrMac });
+
+    // ── 4. Generate the certificate PDF (QR carrier) ──────────────────────
+    const fields = params.fields ?? {};
+    const { reference, dateIssued, expirationDate, notes, ...extraFields } = fields;
+    const disclosed: CertificateField[] = [];
+    if (reference !== undefined) disclosed.push({ label: "Reference", value: String(reference) });
+    if (dateIssued !== undefined) disclosed.push({ label: "Date issued", value: String(dateIssued) });
+    if (expirationDate !== undefined) {
+      disclosed.push({ label: "Expiration", value: String(expirationDate) });
+    }
+    if (notes !== undefined) disclosed.push({ label: "Notes", value: String(notes) });
+    for (const [k, v] of Object.entries(extraFields)) {
+      if (v !== undefined && v !== null) disclosed.push({ label: k, value: String(v) });
+    }
+    const verificationUrl =
+      reserve.verification_url ??
+      `${verifyBase}/verify/${encodeURIComponent(intentId)}?t=${encodeURIComponent(tenant)}&m=${encodeURIComponent(qrMac)}`;
+    const certificate = await buildCertificatePdf({
+      intentId,
+      key: shareA,
+      verifyUrl,
+      verificationUrl,
+      fileName,
+      documentType: params.documentType,
+      ...(params.issuerName !== undefined ? { issuerName: params.issuerName } : {}),
+      disclosedFields: disclosed,
+      tenant,
+      qrMac,
+      baseUrl: verifyBase,
+    });
+
+    // ── 5. Encrypt the ORIGINAL bytes as-is; commitment v2 over ciphertext ─
+    const ciphertext = encryptBytes(rawBytes, fullKey);
+    const commitment = commitmentHash(ciphertext);
+
+    // ── 6. Commit — same contract as the stamped path; qr_placement records
+    // where the QR lives ON THE CERTIFICATE (metadata only). ──────────────
+    const metadata: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(extraFields)) {
+      if (v !== undefined) metadata[k] = v;
+    }
+    // The stored artifact is the original file, delivered via a certificate.
+    metadata["sealed_as"] = "certificate";
+    const body: Record<string, unknown> = {
+      intent_id: intentId,
+      qr_placement: certificate.qrPlacement,
+      document_type: params.documentType,
+      encrypted_file_b64: ciphertext,
+      commitment_hash: commitment,
+      file_size_bytes: rawBytes.length,
+      file_content_type: contentType,
+      file_original_name: fileName,
+      end_cell: true,
+      pieces,
+      issuer_certified: params.issuerCertified ?? true,
+    };
+    if (reference !== undefined) body["reference"] = reference;
+    if (dateIssued !== undefined) body["date_issued"] = dateIssued;
+    if (expirationDate !== undefined) body["expiration_date"] = expirationDate;
+    if (notes !== undefined) body["notes"] = notes;
+    body["metadata"] = metadata;
+    if (validUntilIso !== undefined) body["valid_until"] = validUntilIso;
+
+    const data = await commitWithRetry(http, body, intentId, reserve.verification_url);
+
+    return {
+      sealedPdf: Buffer.from(certificate.pdf),
+      sealMode: "sidecar",
+      originalFile: Buffer.from(rawBytes),
+      originalContentType: contentType,
+      intentId,
+      qrMac,
+      verifyUrl,
+      brandedQr: certificate.brandedQr,
+      certificateUrl: `${verifyBase}/certificate/${encodeURIComponent(intentId)}`,
+      verificationUrl: data.verification_url ?? verificationUrl,
+    };
+  } catch (err) {
+    throw sealError(err, intentId, qrMac, reserve.expires_at);
+  }
+}
+
+/**
  * The one-call seal orchestration. Exposed as `ValidPayClient.sealDocument`;
  * this free function takes the client's request seam so the whole flow is
  * unit-testable against a mocked API.
@@ -365,14 +557,20 @@ export async function sealDocumentWithHttp(
     validUntilIso = new Date(t).toISOString();
   }
 
-  // Accept PDFs AND images: an image input is normalized IN MEMORY into a
-  // single-page PDF (its one page IS the image), then the seal pipeline below
-  // runs unchanged — the sealed artifact is a normal sealed PDF, so verify /
-  // KeyHalve need zero changes. Detection is by MAGIC BYTES, not the filename.
-  // Native (zero extra dep): PDF passthrough, PNG, JPEG. Via the optional
-  // `sharp` peer: WebP, TIFF, GIF (first frame). HEIC/Office/unknown throw a
-  // clear unsupported_file_type. All in memory — no temp files.
   const rawBytes = await loadFileBytes(params.file);
+
+  // Route by the input's TRUE type (magic bytes, not the filename):
+  //   • PDF / image (PNG/JPEG/WebP/TIFF/GIF) → STAMP the QR into the document
+  //     (images are normalized in memory into a single-page PDF first). The
+  //     sealed artifact is a normal sealed PDF — verify/KeyHalve unchanged.
+  //   • anything else (Word/Excel/PowerPoint, arbitrary binary) → SIDECAR:
+  //     encrypt the ORIGINAL as-is and carry the QR on a generated certificate
+  //     PDF. Same scan→decrypt→view flow; no conversion, no format rejection.
+  // All in memory — no temp files.
+  if (!isStampable(rawBytes)) {
+    return sealSidecarWithHttp(http, params, rawBytes, validUntilIso);
+  }
+  // Stampable: normalize an image into a single-page PDF (PDF passes through).
   const bytes = await normalizeToPdf(rawBytes);
 
   const rawPlacement = params.placement ?? DEFAULT_SEAL_PLACEMENT;
@@ -628,40 +826,7 @@ export async function sealDocumentWithHttp(
     if (validUntilIso !== undefined) body["valid_until"] = validUntilIso;
 
     // ── 8. Commit — one automatic retry on network-shaped failures only ──
-    let data: RawCommitResponse;
-    try {
-      data = await http.request<RawCommitResponse>("POST", "/v1/intent/commit", {
-        body,
-        auth: true,
-      });
-    } catch (err) {
-      if (!(err instanceof ValidPayError) || err.code !== "network_error") throw err;
-      try {
-        data = await http.request<RawCommitResponse>("POST", "/v1/intent/commit", {
-          body,
-          auth: true,
-        });
-      } catch (retryErr) {
-        // The lost-response case: our FIRST commit landed but its response
-        // never arrived, so the retry sees already_committed. Only this
-        // process holds the reservation's account key material mid-flight —
-        // recover as success with the reserve's verification_url (the same
-        // single builder the commit response uses).
-        if (
-          retryErr instanceof ValidPayError &&
-          retryErr.code === "already_committed"
-        ) {
-          data = {
-            retrieval_id: intentId,
-            ...(reserve.verification_url !== undefined
-              ? { verification_url: reserve.verification_url }
-              : {}),
-          };
-        } else {
-          throw retryErr;
-        }
-      }
-    }
+    const data = await commitWithRetry(http, body, intentId, reserve.verification_url);
 
     // Branded-QR (Prompt 158) decision for the canonical page's stamp —
     // recomputed with the exact URL that page's QR encodes (page-tagged on
@@ -679,6 +844,7 @@ export async function sealDocumentWithHttp(
 
     return {
       sealedPdf: Buffer.from(stamped),
+      sealMode: "stamped",
       intentId,
       qrMac,
       verifyUrl,

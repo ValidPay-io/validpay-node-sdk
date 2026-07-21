@@ -62,9 +62,15 @@ File in, sealed+stamped PDF out. `sealDocument` runs the reserve→commit flow
 against the ValidPay API so the QR is stamped INTO the document **before** it
 is encrypted — the sealed artifact and the distributed artifact are the same
 file. A PDF is sealed directly; an **image** (PNG, JPEG, WebP, TIFF, GIF) is
-normalized in memory into a single-page PDF first, then sealed as a normal PDF
-— type is detected by magic bytes, not the extension (for Word/Excel, convert
-to PDF first). All crypto is local: the AES-256 key is End-Cell split (QR +
+normalized in memory into a single-page PDF first, then sealed as a normal PDF.
+Any **other file** (Word, Excel, PowerPoint, arbitrary binary) is sealed in
+**sidecar** mode: the original is encrypted as-is and a separate **certificate
+PDF** carries the verify QR — `result.sealMode` is `"sidecar"`, the certificate
+is `result.sealedPdf`, and the untouched original is `result.originalFile`
+(hand out both). Scanning the certificate's QR decrypts back to the original,
+the same flow as a stamped PDF. Type is detected by magic bytes, not the
+extension; nothing is ever converted (blindness is preserved). All crypto is
+local: the AES-256 key is End-Cell split (QR +
 KeyHalve rail + platform), and neither the key nor the plaintext ever leaves
 your process. Requires an account-linked API key with `intent:create` plus the
 optional peer deps `pdf-lib` and `qrcode` (and `sharp`, only for WebP/TIFF/GIF).

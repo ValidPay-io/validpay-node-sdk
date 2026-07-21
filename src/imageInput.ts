@@ -41,6 +41,35 @@ export type DetectedInputType =
 /** Image types normalized to a single-page PDF before sealing. */
 export const SUPPORTED_IMAGE_TYPES = ["png", "jpeg", "webp", "tiff", "gif"] as const;
 
+/** Types the seal STAMPS a QR into directly (PDF, or an image via a one-page
+ *  PDF). Anything else is sealed via the sidecar certificate. */
+export const STAMPABLE_TYPES: ReadonlySet<DetectedInputType> = new Set<DetectedInputType>([
+  "pdf",
+  ...SUPPORTED_IMAGE_TYPES,
+]);
+
+/** True when the input can carry the QR on the document itself. */
+export function isStampable(bytes: Uint8Array): boolean {
+  return STAMPABLE_TYPES.has(detectInputType(bytes));
+}
+
+/** Recorded `file_content_type` for a NON-stampable (sidecar) original. Known
+ *  Office types keep their real MIME (nicer verify UX); everything else is the
+ *  universal `application/octet-stream` (the original name carries the
+ *  extension for download). */
+export function sidecarContentType(fileName: string | undefined): string {
+  const ext = (fileName ?? "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  const OFFICE: Record<string, string> = {
+    doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ppt: "application/vnd.ms-powerpoint",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  };
+  return (ext && OFFICE[ext]) || "application/octet-stream";
+}
+
 /** Human list used verbatim in error text and tool descriptions. */
 export const SUPPORTED_TYPES_LABEL = "PDF, PNG, JPEG, WebP, TIFF, GIF";
 

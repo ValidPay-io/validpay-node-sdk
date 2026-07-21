@@ -163,14 +163,14 @@ describe("sealDocument accepts an image → sealed PDF that scans", () => {
     }
   });
 
-  it("rejects an unsupported type (HEIC) BEFORE reserving anything", async () => {
-    const { client, fetchMock } = mockApi();
+  it("seals a not-stampable image container (HEIC) via the sidecar certificate", async () => {
+    // HEIC is not decoded (no bundled decoder) — rather than reject, it seals
+    // via the sidecar certificate (the original HEIC is encrypted as-is).
+    const { client } = mockApi();
     const heic = Buffer.from([
-      0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63,
+      0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 1, 2, 3, 4,
     ]);
-    await expect(
-      client.sealDocument({ file: heic, documentType: "invoice" }),
-    ).rejects.toMatchObject({ code: "unsupported_file_type" });
-    expect(fetchMock).not.toHaveBeenCalled();
+    const result = await client.sealDocument({ file: heic, documentType: "photo", fileName: "pic.heic" });
+    expect(result.sealMode).toBe("sidecar");
   });
 });
