@@ -6,6 +6,49 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-22
+
+### Changed — BREAKING
+
+- **`createIntent()` now seals with 3-of-3 End-Cell by default** (the one-rail
+  cut-over). It delegates to `createEndCellIntent()`: the AES-256 key is split
+  into three mandatory XOR pieces — ShareA (returned as `key`, embed in the QR),
+  one KeyHalve rail piece, one ValidPay platform piece. No single party can
+  reassemble it.
+
+  The **return shape is unchanged** (`{ retrievalId, key, qrMac? }`), so callers
+  that simply embed `key` in a QR need no code change.
+
+  Passing `splitKey` (either value) still builds the legacy 2-of-2 / single-key
+  body, but the API now refuses those with `400 legacy_seal_disabled` unless the
+  operator has set `LEGACY_SEAL_ENABLED=true` for an emergency rollback. The
+  option is retained, deprecated, only so that rollback has a client. A
+  `DeprecationWarning` is emitted on first use.
+
+### Removed — BREAKING
+
+- **`createIntentBatch()` is retired** and now throws
+  `ValidPayError("legacy_batch_retired")` without dialling the network. The
+  server endpoint `POST /v1/intent/batch` answers `410 Gone`: it never supported
+  End-Cell, so every intent it created was a legacy single-key seal.
+
+  Migration — loop over `createIntent()` (rate limit is 600/min):
+
+  ```ts
+  const results = [];
+  for (const item of items) results.push(await client.createIntent(item));
+  ```
+
+  The method throws rather than being deleted so that upgrading integrators get
+  the migration instruction at their own call site instead of a `TypeError`.
+
+### Unchanged
+
+- **Verification of documents sealed before this release is completely
+  unaffected.** The cut-over closed seal *creation* only. `verifyIntent()` still
+  handles legacy single-key and 2-of-2 intents exactly as before.
+
+
 ### Added
 
 - **Logo-aware, size-adaptive auto placement (Prompt 159) — `placement: "auto"`

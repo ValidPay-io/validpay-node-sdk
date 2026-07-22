@@ -63,6 +63,28 @@ interface RequestOpts {
   auth: boolean;
 }
 
+let legacySealDeprecationEmitted = false;
+/**
+ * One-rail cut-over (2026-07-22): warn once when a caller explicitly selects the
+ * legacy key model. The API refuses these unless an operator has flipped
+ * LEGACY_SEAL_ENABLED for a rollback, so this warning normally precedes a 400 —
+ * emitting it makes the cause obvious in logs before the response is read.
+ */
+function emitLegacySealDeprecation(): void {
+  if (legacySealDeprecationEmitted) return;
+  legacySealDeprecationEmitted = true;
+  const message =
+    "createIntent({ splitKey }) selects the LEGACY key model and is deprecated " +
+    "since @validpay/node-sdk 0.10.0. Every new ValidPay seal is a 3-of-3 " +
+    "End-Cell; the API refuses legacy seals with 400 legacy_seal_disabled. " +
+    "Drop the splitKey option — createIntent() now seals 3-of-3 by default.";
+  if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
+    process.emitWarning(message, "DeprecationWarning");
+  } else {
+    console.warn(message);
+  }
+}
+
 let splitKeyDeprecationEmitted = false;
 function emitSplitKeyDeprecation(): void {
   if (splitKeyDeprecationEmitted) return;
@@ -102,18 +124,35 @@ export class ValidPayClient {
   /**
    * Encrypt `payload` locally and register it with the ValidPay API.
    *
-   * Since 0.4.0 this uses **split-key protection (Patent C) by default**:
-   * the AES-256 key is split into two XOR shares — Share A is returned as
-   * `key` (embed it in the QR code exactly as before), Share B is stored
-   * on the ValidPay server. The full decryption key never exists on any
-   * single system after this call returns. Pass `splitKey: false` for the
-   * legacy single-key flow.
+   * **Since 0.10.0 this seals with 3-of-3 End-Cell by default** (the one-rail
+   * cut-over, 2026-07-22). The AES-256 key is split into three mandatory XOR
+   * pieces: ShareA is returned as `key` (embed it in the QR exactly as before),
+   * one piece goes to the KeyHalve rail, one to the ValidPay platform. No single
+   * party — including ValidPay — can reassemble it.
+   *
+   * This is a behaviour change, not just a default change: `createIntent()` now
+   * delegates to {@link createEndCellIntent}. The returned shape is unchanged
+   * (`{ retrievalId, key, qrMac? }`), so callers that just embed `key` in a QR
+   * need no edit.
+   *
+   * Passing `splitKey` (either value) selects the LEGACY 2-of-2 / single-key
+   * body. The API refuses those with 400 `legacy_seal_disabled` unless the
+   * operator has set `LEGACY_SEAL_ENABLED=true` for an emergency rollback, so
+   * the parameter is kept — deprecated — purely so the rollback path still has a
+   * client. Do not use it in new code.
    */
   async createIntent(params: CreateIntentParams): Promise<CreateIntentResult> {
     if (!params.documentType) {
       throw new ValidPayError("invalid_argument", "documentType is required");
     }
     validateTimeLock(params.validFrom, params.validUntil);
+
+    // ONE-RAIL DEFAULT: no explicit splitKey ⇒ a real 3-of-3 End-Cell seal.
+    if (params.splitKey === undefined) {
+      const { splitKey: _ignored, ...rest } = params;
+      return this.createEndCellIntent(rest);
+    }
+    emitLegacySealDeprecation();
 
     const splitKey = params.splitKey !== false;
     const fullKey = generateKey();
@@ -321,85 +360,34 @@ export class ValidPayClient {
     );
   }
 
-  async createIntentBatch(items: BatchIntentItem[]): Promise<CreateIntentResult[]> {
-    if (!Array.isArray(items) || items.length === 0) {
-      throw new ValidPayError("invalid_argument", "items must contain at least 1 item");
-    }
-    if (items.length > 100) {
-      throw new ValidPayError(
-        "invalid_argument",
-        `items must contain at most 100 items (got ${items.length})`,
-      );
-    }
-
-    const keys: string[] = [];
-    const requestItems: Array<Record<string, unknown>> = [];
-    items.forEach((item, idx) => {
-      if (!item.documentType) {
-        throw new ValidPayError(
-          "invalid_argument",
-          `items[${idx}].documentType is required`,
-        );
-      }
-      if (!("payload" in item)) {
-        throw new ValidPayError("invalid_argument", `items[${idx}].payload is required`);
-      }
-      try {
-        validateTimeLock(item.validFrom, item.validUntil);
-      } catch (e) {
-        if (e instanceof ValidPayError) {
-          throw new ValidPayError("invalid_argument", `items[${idx}]: ${e.message}`);
-        }
-        throw e;
-      }
-
-      const k = generateKey();
-      keys.push(k);
-      const plaintext = JSON.stringify(item.payload);
-      // M-5: bind document_type + validity window as AAD per item.
-      const itemAad = buildAad(item.documentType, item.validFrom, item.validUntil);
-      const item_encrypted_payload = encrypt(plaintext, k, itemAad);
-      const req: Record<string, unknown> = {
-        document_type: item.documentType,
-        encrypted_payload: item_encrypted_payload,
-        // Commitment v2: hash the ciphertext, not the plaintext (C-1).
-        commitment_hash: commitmentHash(item_encrypted_payload),
-        encryption_version: 2,
-      };
-      if (item.validFrom !== undefined) req["valid_from"] = item.validFrom;
-      if (item.validUntil !== undefined) req["valid_until"] = item.validUntil;
-      if (item.onBehalfOf !== undefined) req["on_behalf_of"] = item.onBehalfOf;
-      requestItems.push(req);
-    });
-
-    const data = await this.request<RawBatchCreateResponse>("POST", "/v1/intent/batch", {
-      body: { intents: requestItems },
-      auth: true,
-    });
-
-    if (!Array.isArray(data?.results) || data.results.length !== keys.length) {
-      throw new ValidPayError(
-        "invalid_response",
-        "API response missing results array of expected length",
-        { details: data },
-      );
-    }
-
-    return data.results.map((row, i) => {
-      if (!row?.retrieval_id) {
-        throw new ValidPayError("invalid_response", `results[${i}] missing retrieval_id`, {
-          details: data,
-        });
-      }
-      // The batch path rejects End-Cell today (no qr_mac), but thread it
-      // defensively so a future MAC-minting batch response is never dropped.
-      return {
-        retrievalId: row.retrieval_id,
-        key: keys[i]!,
-        ...(row.qr_mac ? { qrMac: row.qr_mac } : {}),
-      };
-    });
+  /**
+   * @deprecated RETIRED by the one-rail cut-over (2026-07-22). The server
+   * endpoint `POST /v1/intent/batch` answers **410 Gone** — it never supported
+   * End-Cell, so every intent it created was a legacy single-key seal.
+   *
+   * Replace with a loop over {@link createIntent} (or {@link sealDocument} for
+   * files), which seals 3-of-3. The per-call rate limit is 600/min:
+   *
+   * ```ts
+   * const results = [];
+   * for (const item of items) results.push(await client.createIntent(item));
+   * ```
+   *
+   * The method is kept — throwing a typed, explanatory error rather than
+   * removed — so upgrading integrators get the migration instruction at their
+   * call site instead of a `TypeError: not a function`.
+   */
+  async createIntentBatch(_items: BatchIntentItem[]): Promise<CreateIntentResult[]> {
+    throw new ValidPayError(
+      "legacy_batch_retired",
+      "createIntentBatch() was retired by the one-rail cut-over (2026-07-22): " +
+        "POST /v1/intent/batch now returns 410 Gone because it could only create " +
+        "legacy single-key seals, never 3-of-3 End-Cell. Loop over createIntent() " +
+        "(or sealDocument() for files) instead — each call produces a real 3-of-3 " +
+        "seal. Intents created by the old batch endpoint keep verifying normally.",
+    );
   }
+
 
   /**
    * Verify a sealed document. For End-Cell intents whose verify URL carries the

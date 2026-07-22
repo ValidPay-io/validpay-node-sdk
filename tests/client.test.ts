@@ -9,6 +9,7 @@ import {
   buildAad,
   splitKey,
   combineKeyShares,
+  combineKeyPieces,
   splitKeyPieces,
   encryptFields,
   buildKeyMap,
@@ -28,9 +29,10 @@ describe("ValidPayClient", () => {
   });
 
   it("createIntent encrypts client-side, posts to /v1/intent, sends commitment hash, never sends key", async () => {
-    // Since 0.4.0 createIntent defaults to split-key: result.key is Share A,
-    // Share B travels to the server, and neither the full key nor the
-    // plaintext ever appears on the wire.
+    // Since 0.10.0 (the one-rail cut-over) createIntent defaults to 3-of-3
+    // End-Cell: result.key is ShareA, one piece goes to the KeyHalve rail and
+    // one to the platform, and neither the full key nor the plaintext ever
+    // appears on the wire.
     const fetchMock = vi.fn(async () =>
       jsonResponse(201, { retrieval_id: "vp_abc123def456", status: "active" }),
     );
@@ -63,8 +65,15 @@ describe("ValidPayClient", () => {
     // C-1: commitment is over the ciphertext, not the plaintext.
     expect(sentBody.commitment_hash).toBe(commitmentHash(sentBody.encrypted_payload));
     expect(sentBody.commitment_hash).not.toBe(commitmentHash(JSON.stringify(payload)));
-    expect(sentBody.split_key).toBe(true);
-    expect(typeof sentBody.key_fragment_b).toBe("string");
+    // ONE-RAIL: a 3-of-3 End-Cell body, NOT the legacy split_key pair.
+    expect(sentBody.end_cell).toBe(true);
+    expect(sentBody.split_key).toBeUndefined();
+    expect(sentBody.key_fragment_b).toBeUndefined();
+    // Exactly one rail piece + one platform piece; ShareA stays with the caller.
+    expect(sentBody.pieces).toEqual([
+      { holder: "keyhalve", piece: expect.any(String) },
+      { holder: "platform", piece: expect.any(String) },
+    ]);
     // M-5: AAD-bound, declared as encryption_version 2.
     expect(sentBody.encryption_version).toBe(2);
 
@@ -75,9 +84,12 @@ describe("ValidPayClient", () => {
     expect(fullCall).not.toContain("123-45-6789");
     expect(fullCall).not.toContain("Jane Doe");
 
-    // Share A (returned) XOR Share B (sent) reconstructs the full key —
-    // which itself never appears on the wire — and decrypts the payload.
-    const fullKey = combineKeyShares(result.key, sentBody.key_fragment_b);
+    // ShareA (returned) XOR the two server pieces (sent) reconstructs the full
+    // key — which itself never appears on the wire — and decrypts the payload.
+    const fullKey = combineKeyPieces(
+      result.key,
+      sentBody.pieces.map((p: { piece: string }) => p.piece),
+    );
     expect(fullCall).not.toContain(fullKey);
     // M-5: the blob is AAD-bound, so pass the same AAD the create call used.
     const decrypted = JSON.parse(
@@ -434,35 +446,35 @@ describe("ValidPayClient", () => {
     );
   });
 
-  it("createIntentBatch encrypts each item with its own key", async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse(201, {
-        results: [
-          { retrieval_id: "vp_a", status: "active" },
-          { retrieval_id: "vp_b", status: "active" },
-        ],
-      }),
-    );
+  it("createIntentBatch is RETIRED — throws with the migration instruction, never dials the network", async () => {
+    // Was: "createIntentBatch encrypts each item with its own key". The
+    // one-rail cut-over (2026-07-22) retired POST /v1/intent/batch (410 Gone)
+    // because it could only mint legacy single-key seals. The method throws
+    // client-side rather than round-tripping to a 410, so the caller gets the
+    // fix at their own call site.
+    const fetchMock = vi.fn(async () => jsonResponse(201, { results: [] }));
     const client = new ValidPayClient({
       apiKey: "k",
       baseUrl: "https://api.example.test",
       fetch: fetchMock as unknown as typeof fetch,
     });
-    const results = await client.createIntentBatch([
-      { documentType: "check", payload: { x: 1 } },
-      { documentType: "check", payload: { x: 2 } },
-    ]);
-    expect(results).toHaveLength(2);
-    expect(results[0]!.retrievalId).toBe("vp_a");
-    expect(results[1]!.retrievalId).toBe("vp_b");
-    expect(results[0]!.key).not.toBe(results[1]!.key);
-
-    const sent = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(sent.intents).toHaveLength(2);
-    expect(typeof sent.intents[0].commitment_hash).toBe("string");
+    await expect(
+      client.createIntentBatch([
+        { documentType: "check", payload: { x: 1 } },
+        { documentType: "check", payload: { x: 2 } },
+      ]),
+    ).rejects.toMatchObject({ code: "legacy_batch_retired" });
+    await expect(
+      client.createIntentBatch([{ documentType: "check", payload: { x: 1 } }]),
+    ).rejects.toThrow(/Loop over createIntent\(\)/);
+    // No request is made — the retirement is enforced before any encryption.
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("createIntentBatch rejects 0 or >100 items", async () => {
+    // Still a ValidPayError, now the retirement one — the arity guards became
+    // unreachable when the method was retired, and asserting the error TYPE
+    // keeps this test meaningful rather than deleting it.
     const client = new ValidPayClient({ apiKey: "k" });
     await expect(client.createIntentBatch([])).rejects.toThrow(ValidPayError);
     const tooMany = Array.from({ length: 101 }, () => ({
@@ -886,25 +898,37 @@ describe("ValidPayClient — creation surfaces the rail-minted anti-fake qr_mac"
     expect("qrMac" in result).toBe(false);
   });
 
-  it("createIntentBatch threads a per-item qr_mac defensively", async () => {
+  it("createIntent (now End-Cell by default) surfaces the rail-minted qr_mac", async () => {
+    // Replaces "createIntentBatch threads a per-item qr_mac defensively" —
+    // batch is retired, so the qr_mac passthrough that matters is the one on
+    // the default seal path. The MAC is one-time (minted at seal) and MUST
+    // reach the caller, or the stamped QR cannot carry ?m= and will scan RED.
     const fetchMock = vi.fn(async () =>
-      jsonResponse(201, {
-        results: [
-          { retrieval_id: "vp_b1", qr_mac: "X6n5UyGi" },
-          { retrieval_id: "vp_b2" },
-        ],
-      }),
+      jsonResponse(201, { retrieval_id: "vp_b1", qr_mac: "X6n5UyGi" }),
     );
     const client = new ValidPayClient({
       apiKey: "k",
       baseUrl: "https://api.example.test",
       fetch: fetchMock as unknown as typeof fetch,
     });
-    const results = await client.createIntentBatch([
-      { documentType: "invoice", payload: { a: 1 } },
-      { documentType: "invoice", payload: { b: 2 } },
-    ]);
-    expect(results[0]!.qrMac).toBe("X6n5UyGi");
-    expect(results[1]!.qrMac).toBeUndefined();
+    const result = await client.createIntent({
+      documentType: "invoice",
+      payload: { a: 1 },
+    });
+    expect(result.qrMac).toBe("X6n5UyGi");
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string).end_cell).toBe(
+      true,
+    );
+  });
+
+  it("createIntent omits qrMac when the server mints none", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(201, { retrieval_id: "vp_b2" }));
+    const client = new ValidPayClient({
+      apiKey: "k",
+      baseUrl: "https://api.example.test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    const result = await client.createIntent({ documentType: "invoice", payload: { b: 2 } });
+    expect(result.qrMac).toBeUndefined();
   });
 });
