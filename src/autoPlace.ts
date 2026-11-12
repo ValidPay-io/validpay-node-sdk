@@ -99,6 +99,15 @@ export interface PageObstacles {
 interface PdfJsDocumentLike {
   numPages: number;
   getPage(pageNumber: number): Promise<PdfJsPageLike>;
+  /** pdf.js ≤5 had `destroy()` on the document proxy; pdf.js 6 removed it.
+   *  Teardown goes through the loading task (below) on every version. */
+  destroy?(): Promise<unknown>;
+}
+
+/** What `getDocument()` returns: the loading task. `destroy()` lives here on
+ *  pdf.js 4, 5 and 6 — it terminates the worker and frees the document. */
+interface PdfJsLoadingTaskLike {
+  promise: Promise<PdfJsDocumentLike>;
   destroy(): Promise<unknown>;
 }
 
@@ -108,7 +117,7 @@ interface PdfJsEntryLike extends PdfJsModuleLike {
     useSystemFonts?: boolean;
     isEvalSupported?: boolean;
     disableFontFace?: boolean;
-  }): { promise: Promise<PdfJsDocumentLike> };
+  }): PdfJsLoadingTaskLike;
 }
 
 async function loadPdfjs(): Promise<PdfJsEntryLike> {
@@ -162,15 +171,17 @@ export async function extractAutoObstacles(
     );
   }
   const pdfjs = await loadPdfjs();
+  let task: PdfJsLoadingTaskLike;
   let doc: PdfJsDocumentLike;
   try {
     // pdf.js may transfer the buffer to its worker — hand it a copy.
-    doc = await pdfjs.getDocument({
+    task = pdfjs.getDocument({
       data: new Uint8Array(pdf),
       useSystemFonts: true,
       isEvalSupported: false,
       disableFontFace: true,
-    }).promise;
+    });
+    doc = await task.promise;
   } catch (cause) {
     throw new ValidPayError(
       "unsupported_file_type",
@@ -206,8 +217,12 @@ export async function extractAutoObstacles(
     }
     return out;
   } finally {
+    // Tear down through the LOADING TASK, not the document proxy: pdf.js 6
+    // removed PDFDocumentProxy.destroy(), and with the old call this block
+    // became a silent no-op that left the worker alive after every auto
+    // placement. task.destroy() exists on pdf.js 4, 5 and 6.
     try {
-      await doc.destroy();
+      await task.destroy();
     } catch {
       // best-effort cleanup
     }
